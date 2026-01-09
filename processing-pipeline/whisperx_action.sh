@@ -3,6 +3,11 @@
 # WhisperX Recording & Transcription Script
 # Records via OBS, extracts audio, and transcribes using WhisperX
 #
+# Usage: whisperx_action.sh [prefix]
+#   prefix: Optional filename prefix. If not provided, prompts interactively.
+#
+# NOTE: For calendar integration and menu bar UI, use whisperx_recorder.py instead.
+#
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 OBS_RECORD_DIR="$HOME/OBSRecordings"  # Where OBS saves recordings (must match OBS settings)
@@ -40,8 +45,12 @@ else
     export OBS_CMD_ARGS
 fi
 
-# ─── Prompt for filename prefix ───────────────────────────────────────────────
-read -p "📝 Enter a filename prefix (e.g., meeting, interview): " PREFIX
+# ─── Get filename prefix (from argument or prompt) ────────────────────────────
+if [ -n "$1" ]; then
+    PREFIX="$1"
+else
+    read -p "📝 Enter a filename prefix (e.g., meeting, interview): " PREFIX
+fi
 PREFIX=${PREFIX:-call}  # Default to 'call' if empty
 PREFIX=$(echo "$PREFIX" | tr ' ' '_' | tr -cd '[:alnum:]_-')  # Sanitize input
 
@@ -112,7 +121,7 @@ echo "📦 Moved to: $VIDEO_FILE"
 
 # ─── Close OBS ───────────────────────────────────────────────────────────────
 echo "🛑 Closing OBS..."
-osascript -e 'quit app "OBS"'
+osascript -e 'try' -e 'tell application "OBS" to quit' -e 'end try' 2>/dev/null
 
 # ─── Extract audio ────────────────────────────────────────────────────────────
 ffmpeg -i "$VIDEO_FILE" -ar 16000 -ac 1 "$AUDIO_FILE"

@@ -1,0 +1,75 @@
+{
+  "_comment": "WhisperX Recorder Default Configuration",
+  "_docs": "Copy this file to config.default.json and fill in your values",
+  
+  "recording": {
+    "output_dir": "~/OBSRecordings",
+    "obs_ws_port": "4455",
+    "obs_ws_password": "YOUR_OBS_WEBSOCKET_PASSWORD"
+  },
+  
+  "transcription": {
+    "diarize": true,
+    "language": "en",
+    "device": "cpu",
+    "compute_type": "float32",
+    "whisperx_path": "~/anaconda3/bin/whisperx",
+    "hf_token": "YOUR_HUGGINGFACE_TOKEN"
+  },
+  
+  "openai": {
+    "api_key": "YOUR_OPENAI_API_KEY",
+    "model": "gpt-4o",
+    "enabled": true
+  },
+  
+  "call_types": {
+    "team_meeting": {
+      "name": "Team Meeting",
+      "icon": "👥",
+      "prompt": "You are analyzing a team meeting transcript. Please provide:\n1. **Meeting Summary** - A concise overview of what was discussed\n2. **Key Decisions** - Any decisions that were made\n3. **Action Items** - Tasks assigned with owners if mentioned\n4. **Follow-ups** - Items that need future attention\n\nBe specific and actionable in your analysis."
+    },
+    "interview_sa": {
+      "name": "Interview - SA",
+      "icon": "🎯",
+      "prompt": "You are analyzing a Solutions Architect interview transcript. Please provide:\n1. **Candidate Assessment** - Overall impression and technical depth\n2. **Technical Skills** - Strengths and gaps observed\n3. **Communication** - How well they explained concepts\n4. **Cultural Fit** - Collaboration indicators and red flags\n5. **Recommendation** - Hire/No-hire with reasoning\n6. **Follow-up Questions** - Topics to explore in next rounds"
+    },
+    "one_on_one": {
+      "name": "1:1",
+      "icon": "👤",
+      "prompt_template": "You are analyzing a 1:1 meeting transcript with {person_name}. Please provide:\n1. **Discussion Topics** - Main subjects covered\n2. **Employee Concerns** - Any issues or blockers raised\n3. **Career Development** - Growth discussions or goals mentioned\n4. **Action Items** - Follow-ups for both manager and employee\n5. **Sentiment** - Overall tone and engagement level\n6. **Notes for Next 1:1** - Topics to revisit",
+      "requires_person_name": true
+    },
+    "pipeline_council": {
+      "name": "Pipeline Council Call",
+      "icon": "📊",
+      "prompt": "You are analyzing a Pipeline Council meeting transcript. Please provide:\n1. **Pipeline Overview** - Key deals discussed and their stages\n2. **Deal Updates** - Movement, blockers, and next steps per opportunity\n3. **Risk Assessment** - Deals at risk and mitigation strategies\n4. **Forecast Impact** - Any changes to committed/best case numbers\n5. **Resource Needs** - Support requests for specific deals\n6. **Action Items** - Follow-ups with owners and deadlines"
+    },
+    "ee_xteam_leader": {
+      "name": "EE XTeam Leader Call",
+      "icon": "🌟",
+      "prompt": "You are analyzing an Enterprise Excellence Cross-Team Leader meeting transcript. Please provide:\n1. **Strategic Updates** - Key initiatives and progress\n2. **Cross-team Coordination** - Dependencies and collaboration needs\n3. **Challenges** - Blockers affecting multiple teams\n4. **Best Practices** - Wins to share across teams\n5. **Escalations** - Items needing leadership attention\n6. **Action Items** - Tasks with owners and timelines"
+    },
+    "ee_fe_leader": {
+      "name": "EE FE Leader Call",
+      "icon": "⚡",
+      "prompt": "You are analyzing an Enterprise Excellence Field Engineering Leader meeting transcript. Please provide:\n1. **Technical Updates** - Platform/product developments discussed\n2. **Customer Challenges** - Common technical issues across accounts\n3. **Team Updates** - Staffing, training, or capacity discussions\n4. **Process Improvements** - Workflow or tooling changes proposed\n5. **Escalations** - Items requiring attention\n6. **Action Items** - Follow-ups with owners"
+    },
+    "sales_team": {
+      "name": "Sales Team Meeting",
+      "icon": "💼",
+      "prompt": "You are analyzing a Sales Team meeting transcript. Please provide:\n1. **Performance Review** - Numbers, metrics, quota attainment discussed\n2. **Deal Highlights** - Key wins, losses, and pipeline movement\n3. **Competitive Intel** - Competitor mentions and positioning\n4. **Product Feedback** - Feature requests or gaps identified\n5. **Team Updates** - Announcements, training, or process changes\n6. **Action Items** - Tasks with owners and deadlines"
+    },
+    "initiative_project": {
+      "name": "Initiative Project Meeting",
+      "icon": "🚀",
+      "prompt": "You are analyzing a Project/Initiative meeting transcript. Please provide:\n1. **Project Status** - Current phase and overall health\n2. **Progress Update** - Milestones achieved since last meeting\n3. **Blockers** - Issues impeding progress\n4. **Risks** - Potential problems and mitigation plans\n5. **Resource Needs** - People, budget, or tool requirements\n6. **Next Steps** - Immediate priorities and timeline\n7. **Action Items** - Tasks with owners and due dates"
+    },
+    "generic": {
+      "name": "Recording",
+      "icon": "🎙️",
+      "prompt": "You are analyzing a meeting/call transcript. Please provide:\n1. **Summary** - Brief overview of the discussion\n2. **Key Points** - Main topics covered\n3. **Decisions Made** - Any conclusions reached\n4. **Action Items** - Follow-ups with owners if mentioned\n5. **Notable Quotes** - Important statements worth highlighting"
+    }
+  }
+}
+

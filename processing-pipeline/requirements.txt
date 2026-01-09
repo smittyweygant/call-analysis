@@ -1,0 +1,10 @@
+# WhisperX Recording Pipeline Dependencies
+
+# OpenAI for ChatGPT analysis
+openai>=1.0.0
+
+# WhisperX and its dependencies should be installed separately:
+#   pip install whisperx
+#
+# PyTorch should be installed based on your system:
+#   https://pytorch.org/get-started/locally/
