@@ -274,16 +274,31 @@ def load_context_files(context_file_paths: list) -> str:
     Load and concatenate multiple context files.
     
     Args:
-        context_file_paths: List of relative paths from repo root (e.g., 'Agent_context/shared.md')
+        context_file_paths: List of relative paths (e.g., 'interview/shared_context.md')
     
     Returns:
         Concatenated content of all context files
+    
+    Note:
+        Base path is determined by 'context_base_path' in user settings.
+        If not set, defaults to repo root. This allows users to maintain
+        private prompt repositories separate from the main codebase.
     """
     context_parts = []
-    repo_root = SCRIPT_DIR.parent  # Go up from processing-pipeline to repo root
+    
+    # Check for custom context base path in user settings
+    user_settings = get_user_settings()
+    context_base = user_settings.get('context_base_path')
+    
+    if context_base:
+        base_path = Path(context_base).expanduser()
+        logger.debug(f"Using custom context base path: {base_path}")
+    else:
+        base_path = SCRIPT_DIR.parent  # Default: repo root
+        logger.debug(f"Using default context base path: {base_path}")
     
     for file_path in context_file_paths:
-        full_path = repo_root / file_path
+        full_path = base_path / file_path
         logger.debug(f"Loading context file: {full_path}")
         
         if full_path.exists():

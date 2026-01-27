@@ -25,8 +25,10 @@
     "model": "gpt-4o",
     
     "databricks_profile": "YOUR_DATABRICKS_PROFILE",
-    "databricks_model": "databricks-gpt-5-2"
+    "databricks_model": "databricks-model-name"
   },
+  
+  "_call_types_docs": "Define custom call types below. Each type can have: name, icon, prompt (or prompt_template for dynamic prompts), requires_person_name (for 1:1s), and context_files (array of paths relative to context_base_path in user settings, or repo root if not set)",
   
   "call_types": {
     "team_meeting": {
@@ -34,27 +36,15 @@
       "icon": "👥",
       "prompt": "You are analyzing a team meeting transcript. Please provide:\n1. **Meeting Summary** - A concise overview of what was discussed\n2. **Key Decisions** - Any decisions that were made\n3. **Action Items** - Tasks assigned with owners if mentioned\n4. **Follow-ups** - Items that need future attention\n\nBe specific and actionable in your analysis."
     },
-    "interview_fe_hm": {
-      "name": "Interview: FE Hiring Manager",
+    "interview": {
+      "_comment": "Example showing context_files usage. See examples/ folder for sample context files. Files load from context_base_path (user settings) or repo root",
+      "name": "Interview",
       "icon": "👔",
       "context_files": [
-        "Agent_context/fe_interview_context_shared.md",
-        "Agent_context/fe_interview_context_hiring_manager.md",
-        "Agent_context/fe_interview_context_greenhouse.md",
-        "Agent_context/fe_interview_greenhouse_question_sets.md"
+        "examples/context/interview_shared_context.md",
+        "examples/context/interview_rubric.md"
       ],
-      "prompt": "# Hiring Manager Interview – FE Evaluation Prompt\n\n## Purpose\nEvaluate **role fit, readiness, motivation, and level calibration** for Databricks Emerging Enterprise (EE) Field Engineering roles.\n\n---\n\n## Prompt\n\nYou are assisting with candidate evaluation for **Databricks Emerging Enterprise Field Engineering** roles.\n\n**Context you should use:**\n- Databricks Field Engineering role expectations (Solutions Engineer → Senior Solutions Architect)\n- EE-specific requirements (ambiguity, velocity, customer-facing autonomy)\n- Hunter vs Core motion distinctions\n- The attached Greenhouse Hiring Manager interview prompts\n\n**Input:**\nI will provide a transcript from a **Hiring Manager interview**.\n\n---\n\n## Your Task\nAnalyze the transcript and produce a **clear, opinionated evaluation**.\n\nAvoid fence-sitting. If concerns exist but are mitigable, state how and under what conditions.\n\n---\n\n## Output Structure\n\n### 1. Overall Recommendation\n- **Inclined** or **Not Inclined**\n- One-paragraph rationale\n- If concerns exist, explicitly state:\n  - What the concern is\n  - Whether it is **coachable** at the proposed level\n  - Specific mitigation actions (e.g., ramp support, role alignment, scope constraints)\n\n### 2. Role & Level Assessment\n- Best-fit role (SE, Sr SE, SA, Sr SA, etc.)\n- Justification mapped to observed behaviors (not résumé)\n- Readiness to independently lead customer calls at this level\n\n### 3. Motion Fit\n- Fit for **Hunter**, **Core**, or **Better suited elsewhere**\n- Evidence from the interview supporting this assessment\n\n### 4. Assessment Against FE Role Requirements\nBrief evaluation of:\n- Customer-facing presence & judgment\n- Technical depth vs breadth (appropriate for level)\n- Discovery quality & business framing\n- Ability to operate in ambiguity (EE context)\n\n### 5. Greenhouse Prompt Responses\nProvide concise, high-quality responses to each of the **Hiring Manager Greenhouse prompts**, grounded in the transcript.\n\n---\n\n**Guidance:** Be direct, structured, and calibrated to Databricks hiring standards."
-    },
-    "interview_fe_panel": {
-      "name": "Interview: FE Panel",
-      "icon": "🎯",
-      "context_files": [
-        "Agent_context/fe_interview_context_shared.md",
-        "Agent_context/fe_interview_context_panel_presentation_demo.md",
-        "Agent_context/fe_interview_context_greenhouse.md",
-        "Agent_context/fe_interview_greenhouse_question_sets.md"
-      ],
-      "prompt": "# Panel Interview – Presentation & Demo FE Evaluation Prompt\n\n## Purpose\nEvaluate **execution under pressure, technical persuasion, communication, and values alignment** for Databricks Emerging Enterprise (EE) Field Engineering roles.\n\n---\n\n## Prompt\n\nYou are assisting with candidate evaluation for **Databricks Emerging Enterprise Field Engineering** roles.\n\n**Context you should use:**\n- Databricks SA / SE panel interview expectations\n- Presentation & demo evaluation criteria\n- EE customer context (multiple stakeholders, limited time, ambiguity)\n- The attached Greenhouse Panel interview prompts and rubrics\n\n**Input:**\nI will provide a transcript from a **Panel presentation & demo interview**.\n\n---\n\n## Your Task\nEvaluate how effectively the candidate performed as a **customer-facing Field Engineer** in a live scenario.\n\nDo not default to neutral ratings. Strong signals should be called out clearly; gaps should be explicit.\n\n---\n\n## Output Structure\n\n### 1. Overall Recommendation\n- **Inclined** or **Not Inclined**\n- Clear justification based on panel performance\n- If concerns exist, include mitigation guidance and hiring risk assessment\n\n### 2. Presentation & Demo Effectiveness\nAssess:\n- Accuracy and logic of the proposed solution\n- Quality of discovery and problem framing\n- Ability to connect technical features to business value\n- Time management and structure\n\n### 3. Communication & Objection Handling\nEvaluate:\n- Clarity (verbal and written)\n- Audience awareness (technical vs non-technical)\n- Ability to think on their feet\n- Effectiveness handling questions and pushback\n\n### 4. Competency & Values Signals\nSummarize strengths and gaps across:\n- Core competencies (context-switching, critical thinking, succinctness)\n- Cultural alignment (Customer Obsession, Bias for Action)\n- Databricks company values\n\n### 5. Team & Ramp Assessment\n- Likelihood of ramping successfully within ~3 months\n- How prepared they appeared for this interview\n- Whether you would be excited to work with this person\n\n### 6. Greenhouse Prompt Responses\nProvide clean, concise responses to **each Panel Greenhouse prompt**, using evidence from the transcript.\n\n---\n\n**Guidance:** Write this as if it will be pasted directly into Greenhouse."
+      "prompt": "You are analyzing an interview transcript. Using the provided context about our hiring criteria and evaluation rubric, please provide:\n1. **Overall Assessment** - Your recommendation (Inclined/Not Inclined) with rationale\n2. **Strengths** - Key positive signals observed\n3. **Areas of Concern** - Any gaps or red flags\n4. **Role Fit** - Assessment of candidate fit for the role\n5. **Follow-up Questions** - Suggested topics for next round\n\nBe direct and specific in your evaluation."
     },
     "one_on_one": {
       "name": "1:1",
@@ -62,28 +52,8 @@
       "prompt_template": "You are analyzing a 1:1 meeting transcript with {person_name}. Please provide:\n1. **Discussion Topics** - Main subjects covered\n2. **Employee Concerns** - Any issues or blockers raised\n3. **Career Development** - Growth discussions or goals mentioned\n4. **Action Items** - Follow-ups for both manager and employee\n5. **Sentiment** - Overall tone and engagement level\n6. **Notes for Next 1:1** - Topics to revisit",
       "requires_person_name": true
     },
-    "pipeline_council": {
-      "name": "Pipeline Council Call",
-      "icon": "📊",
-      "prompt": "You are analyzing a Pipeline Council meeting transcript. Please provide:\n1. **Pipeline Overview** - Key deals discussed and their stages\n2. **Deal Updates** - Movement, blockers, and next steps per opportunity\n3. **Risk Assessment** - Deals at risk and mitigation strategies\n4. **Forecast Impact** - Any changes to committed/best case numbers\n5. **Resource Needs** - Support requests for specific deals\n6. **Action Items** - Follow-ups with owners and deadlines"
-    },
-    "ee_xteam_leader": {
-      "name": "EE XTeam Leader Call",
-      "icon": "🌟",
-      "prompt": "You are analyzing an Enterprise Excellence Cross-Team Leader meeting transcript. Please provide:\n1. **Strategic Updates** - Key initiatives and progress\n2. **Cross-team Coordination** - Dependencies and collaboration needs\n3. **Challenges** - Blockers affecting multiple teams\n4. **Best Practices** - Wins to share across teams\n5. **Escalations** - Items needing leadership attention\n6. **Action Items** - Tasks with owners and timelines"
-    },
-    "ee_fe_leader": {
-      "name": "EE FE Leader Call",
-      "icon": "⚡",
-      "prompt": "You are analyzing an Enterprise Excellence Field Engineering Leader meeting transcript. Please provide:\n1. **Technical Updates** - Platform/product developments discussed\n2. **Customer Challenges** - Common technical issues across accounts\n3. **Team Updates** - Staffing, training, or capacity discussions\n4. **Process Improvements** - Workflow or tooling changes proposed\n5. **Escalations** - Items requiring attention\n6. **Action Items** - Follow-ups with owners"
-    },
-    "sales_team": {
-      "name": "Sales Team Meeting",
-      "icon": "💼",
-      "prompt": "You are analyzing a Sales Team meeting transcript. Please provide:\n1. **Performance Review** - Numbers, metrics, quota attainment discussed\n2. **Deal Highlights** - Key wins, losses, and pipeline movement\n3. **Competitive Intel** - Competitor mentions and positioning\n4. **Product Feedback** - Feature requests or gaps identified\n5. **Team Updates** - Announcements, training, or process changes\n6. **Action Items** - Tasks with owners and deadlines"
-    },
-    "initiative_project": {
-      "name": "Initiative Project Meeting",
+    "project": {
+      "name": "Project Meeting",
       "icon": "🚀",
       "prompt": "You are analyzing a Project/Initiative meeting transcript. Please provide:\n1. **Project Status** - Current phase and overall health\n2. **Progress Update** - Milestones achieved since last meeting\n3. **Blockers** - Issues impeding progress\n4. **Risks** - Potential problems and mitigation plans\n5. **Resource Needs** - People, budget, or tool requirements\n6. **Next Steps** - Immediate priorities and timeline\n7. **Action Items** - Tasks with owners and due dates"
     },
@@ -94,4 +64,3 @@
     }
   }
 }
-

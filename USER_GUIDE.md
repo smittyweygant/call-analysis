@@ -517,9 +517,24 @@ For call types requiring dynamic input (like person names):
 }
 ```
 
+### Example Prompt Files
+
+The repository includes example files in the `examples/` folder to help you get started:
+
+```
+examples/
+├── prompts/
+│   └── interview_evaluation_prompt.md    # Sample interview evaluation prompt
+└── context/
+    ├── interview_shared_context.md       # Role requirements, evaluation criteria
+    └── interview_rubric.md               # Scoring rubric and question framework
+```
+
+These examples demonstrate the structure and format for effective prompts. Copy and customize them for your specific needs.
+
 ### Using External Context Files
 
-For complex prompts, use external markdown files:
+For complex prompts, use external markdown files that are loaded before the main prompt:
 
 ```json
 {
@@ -527,15 +542,77 @@ For complex prompts, use external markdown files:
     "name": "Complex Interview",
     "icon": "📋",
     "context_files": [
-      "Agent_context/my_shared_context.md",
-      "Agent_context/my_interview_rubric.md"
+      "interview/shared_context.md",
+      "interview/evaluation_rubric.md"
     ],
     "prompt": "Based on the context provided, evaluate this candidate..."
   }
 }
 ```
 
-Context files are loaded from the repository root and concatenated before the prompt.
+Context files are loaded relative to `context_base_path` (defaults to repository root).
+
+### Private Prompt Repositories
+
+For sensitive or proprietary prompt content, you can maintain a separate private repository:
+
+**1. Create a private GitHub repository for your prompts:**
+
+```bash
+# Create and clone your private prompts repo
+git init ~/my-prompts
+cd ~/my-prompts
+
+# Copy examples as a starting point
+cp -r /path/to/call-analysis/examples/* .
+
+# Customize for your organization
+# Edit context/interview_shared_context.md with your role requirements
+# Edit context/interview_rubric.md with your evaluation criteria
+
+# Commit and push to your private GitHub repo
+git add .
+git commit -m "Initial prompt setup"
+git remote add origin git@github.com:youruser/my-prompts.git
+git push -u origin main
+```
+
+**2. Configure the context base path in your user settings:**
+
+Create or edit `~/.config/whisperx/settings.json`:
+
+```json
+{
+  "context_base_path": "~/my-prompts"
+}
+```
+
+**3. Reference files relative to that base path:**
+
+In your `config.default.json` (which is gitignored):
+
+```json
+{
+  "call_types": {
+    "my_interview": {
+      "name": "My Interview Type",
+      "icon": "👔",
+      "context_files": [
+        "interview/shared_context.md",
+        "interview/evaluation_rubric.md"
+      ],
+      "prompt": "Using the context above, evaluate the candidate..."
+    }
+  }
+}
+```
+
+**Benefits of this approach:**
+
+- **Keep main repo public** - Generic examples work without private content
+- **Version control prompts separately** - Iterate on prompts independently
+- **Easy team sharing** - Share private repo with teammates who need access
+- **Graceful fallback** - Missing context files log warnings but don't fail
 
 ---
 

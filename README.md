@@ -154,20 +154,26 @@ call-analysis/
 ├── SwiftBarPlugins/
 │   └── whisperx_recorder.1s.py         # Menu bar plugin
 ├── processing-pipeline/
-│   ├── config.default.json.template    # Config template
+│   ├── config.default.json.template    # Config template (copy to config.default.json)
 │   ├── config.default.json             # Your config (gitignored)
 │   ├── requirements.txt                # Python dependencies
 │   └── whisperx_recorder.py            # Main backend script
-├── Agent_prompts/                      # ChatGPT prompt files
-│   ├── hm_interview_fe_evaluation_prompt.md
-│   └── panel_presentation_demo_fe_evaluation_prompt.md
-└── Agent_context/                      # Context files for ChatGPT
-    ├── fe_interview_context_shared.md
-    ├── fe_interview_context_hiring_manager.md
-    ├── fe_interview_context_panel_presentation_demo.md
-    ├── fe_interview_context_greenhouse.md
-    └── fe_interview_greenhouse_question_sets.md
+└── examples/                           # Example prompts and context files
+    ├── prompts/
+    │   └── interview_evaluation_prompt.md
+    └── context/
+        ├── interview_shared_context.md
+        └── interview_rubric.md
 ```
+
+### Private Prompt Content
+
+The `examples/` folder contains generic templates to help you get started. For proprietary or company-specific prompts, maintain them in a separate private repository:
+
+1. Set `context_base_path` in `~/.config/whisperx/settings.json` to point to your private repo clone
+2. Reference files relative to that path in your call type `context_files`
+
+See [USER_GUIDE.md](USER_GUIDE.md#private-prompt-repositories) for detailed setup instructions.
 
 ## State & Log Files
 
@@ -175,7 +181,7 @@ Located in `~/.config/whisperx/`:
 
 | File | Purpose |
 |------|---------|
-| `settings.json` | User configuration overrides |
+| `settings.json` | User configuration overrides (includes `context_base_path` for private prompts) |
 | `recording_state.json` | Current recording session |
 | `processing_state.json` | Background processing queue |
 | `logs/whisperx_recorder.log` | Debug and error logs |
