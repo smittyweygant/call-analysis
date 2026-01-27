@@ -28,3 +28,9 @@ env/
 
 # Local user config (stored in ~/.config/whisperx/)
 
+# Credentials
+fe-dev-sandbox-17634e09f43b.json
+
+# Agent context and prompts (pending strategy)
+Agent_context/
+Agent_prompts/

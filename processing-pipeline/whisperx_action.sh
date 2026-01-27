@@ -49,7 +49,7 @@ fi
 if [ -n "$1" ]; then
     PREFIX="$1"
 else
-    read -p "📝 Enter a filename prefix (e.g., meeting, interview): " PREFIX
+read -p "📝 Enter a filename prefix (e.g., meeting, interview): " PREFIX
 fi
 PREFIX=${PREFIX:-call}  # Default to 'call' if empty
 PREFIX=$(echo "$PREFIX" | tr ' ' '_' | tr -cd '[:alnum:]_-')  # Sanitize input

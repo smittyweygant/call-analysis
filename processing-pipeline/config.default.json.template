@@ -18,9 +18,14 @@
   },
   
   "openai": {
+    "provider": "openai",
+    "enabled": true,
+    
     "api_key": "YOUR_OPENAI_API_KEY",
     "model": "gpt-4o",
-    "enabled": true
+    
+    "databricks_profile": "YOUR_DATABRICKS_PROFILE",
+    "databricks_model": "databricks-gpt-5-2"
   },
   
   "call_types": {
@@ -29,10 +34,27 @@
       "icon": "👥",
       "prompt": "You are analyzing a team meeting transcript. Please provide:\n1. **Meeting Summary** - A concise overview of what was discussed\n2. **Key Decisions** - Any decisions that were made\n3. **Action Items** - Tasks assigned with owners if mentioned\n4. **Follow-ups** - Items that need future attention\n\nBe specific and actionable in your analysis."
     },
-    "interview_sa": {
-      "name": "Interview - SA",
+    "interview_fe_hm": {
+      "name": "Interview: FE Hiring Manager",
+      "icon": "👔",
+      "context_files": [
+        "Agent_context/fe_interview_context_shared.md",
+        "Agent_context/fe_interview_context_hiring_manager.md",
+        "Agent_context/fe_interview_context_greenhouse.md",
+        "Agent_context/fe_interview_greenhouse_question_sets.md"
+      ],
+      "prompt": "# Hiring Manager Interview – FE Evaluation Prompt\n\n## Purpose\nEvaluate **role fit, readiness, motivation, and level calibration** for Databricks Emerging Enterprise (EE) Field Engineering roles.\n\n---\n\n## Prompt\n\nYou are assisting with candidate evaluation for **Databricks Emerging Enterprise Field Engineering** roles.\n\n**Context you should use:**\n- Databricks Field Engineering role expectations (Solutions Engineer → Senior Solutions Architect)\n- EE-specific requirements (ambiguity, velocity, customer-facing autonomy)\n- Hunter vs Core motion distinctions\n- The attached Greenhouse Hiring Manager interview prompts\n\n**Input:**\nI will provide a transcript from a **Hiring Manager interview**.\n\n---\n\n## Your Task\nAnalyze the transcript and produce a **clear, opinionated evaluation**.\n\nAvoid fence-sitting. If concerns exist but are mitigable, state how and under what conditions.\n\n---\n\n## Output Structure\n\n### 1. Overall Recommendation\n- **Inclined** or **Not Inclined**\n- One-paragraph rationale\n- If concerns exist, explicitly state:\n  - What the concern is\n  - Whether it is **coachable** at the proposed level\n  - Specific mitigation actions (e.g., ramp support, role alignment, scope constraints)\n\n### 2. Role & Level Assessment\n- Best-fit role (SE, Sr SE, SA, Sr SA, etc.)\n- Justification mapped to observed behaviors (not résumé)\n- Readiness to independently lead customer calls at this level\n\n### 3. Motion Fit\n- Fit for **Hunter**, **Core**, or **Better suited elsewhere**\n- Evidence from the interview supporting this assessment\n\n### 4. Assessment Against FE Role Requirements\nBrief evaluation of:\n- Customer-facing presence & judgment\n- Technical depth vs breadth (appropriate for level)\n- Discovery quality & business framing\n- Ability to operate in ambiguity (EE context)\n\n### 5. Greenhouse Prompt Responses\nProvide concise, high-quality responses to each of the **Hiring Manager Greenhouse prompts**, grounded in the transcript.\n\n---\n\n**Guidance:** Be direct, structured, and calibrated to Databricks hiring standards."
+    },
+    "interview_fe_panel": {
+      "name": "Interview: FE Panel",
       "icon": "🎯",
-      "prompt": "You are analyzing a Solutions Architect interview transcript. Please provide:\n1. **Candidate Assessment** - Overall impression and technical depth\n2. **Technical Skills** - Strengths and gaps observed\n3. **Communication** - How well they explained concepts\n4. **Cultural Fit** - Collaboration indicators and red flags\n5. **Recommendation** - Hire/No-hire with reasoning\n6. **Follow-up Questions** - Topics to explore in next rounds"
+      "context_files": [
+        "Agent_context/fe_interview_context_shared.md",
+        "Agent_context/fe_interview_context_panel_presentation_demo.md",
+        "Agent_context/fe_interview_context_greenhouse.md",
+        "Agent_context/fe_interview_greenhouse_question_sets.md"
+      ],
+      "prompt": "# Panel Interview – Presentation & Demo FE Evaluation Prompt\n\n## Purpose\nEvaluate **execution under pressure, technical persuasion, communication, and values alignment** for Databricks Emerging Enterprise (EE) Field Engineering roles.\n\n---\n\n## Prompt\n\nYou are assisting with candidate evaluation for **Databricks Emerging Enterprise Field Engineering** roles.\n\n**Context you should use:**\n- Databricks SA / SE panel interview expectations\n- Presentation & demo evaluation criteria\n- EE customer context (multiple stakeholders, limited time, ambiguity)\n- The attached Greenhouse Panel interview prompts and rubrics\n\n**Input:**\nI will provide a transcript from a **Panel presentation & demo interview**.\n\n---\n\n## Your Task\nEvaluate how effectively the candidate performed as a **customer-facing Field Engineer** in a live scenario.\n\nDo not default to neutral ratings. Strong signals should be called out clearly; gaps should be explicit.\n\n---\n\n## Output Structure\n\n### 1. Overall Recommendation\n- **Inclined** or **Not Inclined**\n- Clear justification based on panel performance\n- If concerns exist, include mitigation guidance and hiring risk assessment\n\n### 2. Presentation & Demo Effectiveness\nAssess:\n- Accuracy and logic of the proposed solution\n- Quality of discovery and problem framing\n- Ability to connect technical features to business value\n- Time management and structure\n\n### 3. Communication & Objection Handling\nEvaluate:\n- Clarity (verbal and written)\n- Audience awareness (technical vs non-technical)\n- Ability to think on their feet\n- Effectiveness handling questions and pushback\n\n### 4. Competency & Values Signals\nSummarize strengths and gaps across:\n- Core competencies (context-switching, critical thinking, succinctness)\n- Cultural alignment (Customer Obsession, Bias for Action)\n- Databricks company values\n\n### 5. Team & Ramp Assessment\n- Likelihood of ramping successfully within ~3 months\n- How prepared they appeared for this interview\n- Whether you would be excited to work with this person\n\n### 6. Greenhouse Prompt Responses\nProvide clean, concise responses to **each Panel Greenhouse prompt**, using evidence from the transcript.\n\n---\n\n**Guidance:** Write this as if it will be pasted directly into Greenhouse."
     },
     "one_on_one": {
       "name": "1:1",

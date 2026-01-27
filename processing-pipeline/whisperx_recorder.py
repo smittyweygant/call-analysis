@@ -15,10 +15,12 @@ Configuration:
 """
 
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -32,6 +34,46 @@ USER_CONFIG_DIR = Path.home() / ".config/whisperx"
 USER_SETTINGS_FILE = USER_CONFIG_DIR / "settings.json"
 STATE_FILE = USER_CONFIG_DIR / "recording_state.json"
 PROCESSING_STATE_FILE = USER_CONFIG_DIR / "processing_state.json"
+LOG_DIR = USER_CONFIG_DIR / "logs"
+LOG_FILE = LOG_DIR / "whisperx_recorder.log"
+
+
+# ─── Logging Setup ────────────────────────────────────────────────────────────
+
+def setup_logging(verbose: bool = False):
+    """Configure logging to file and optionally console."""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)-8s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # File handler - always log to file
+    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    
+    # Console handler - only if verbose or running interactively
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO if verbose else logging.WARNING)
+    console_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+    
+    # Remove existing handlers to avoid duplicates
+    logger.handlers.clear()
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+
+# Initialize logging
+logger = setup_logging()
 
 
 def deep_merge(base: dict, override: dict) -> dict:
@@ -153,13 +195,67 @@ def get_openai_config() -> dict:
     return _config.get('openai', {})
 
 
+def get_openai_provider() -> str:
+    """Get configured OpenAI provider ('openai' or 'databricks')."""
+    return get_openai_config().get('provider', 'openai')
+
+
 def is_openai_enabled() -> bool:
-    """Check if OpenAI integration is enabled."""
+    """Check if OpenAI integration is enabled and properly configured."""
     openai_config = get_openai_config()
-    return (
-        openai_config.get('enabled', False) and
-        bool(openai_config.get('api_key'))
-    )
+    if not openai_config.get('enabled', False):
+        return False
+    
+    provider = openai_config.get('provider', 'openai')
+    if provider == 'databricks':
+        # Databricks requires a profile (token fetched at runtime)
+        return bool(openai_config.get('databricks_profile'))
+    else:
+        # Direct OpenAI requires an API key
+        return bool(openai_config.get('api_key'))
+
+
+def get_databricks_openai_client(profile: str):
+    """
+    Create OpenAI client configured for Databricks model serving.
+    Uses Databricks SDK to fetch OAuth token from configured profile.
+    
+    Args:
+        profile: Databricks CLI profile name (from ~/.databrickscfg)
+    
+    Returns:
+        tuple: (openai.OpenAI client, host) on success, or (None, error_message) on failure
+    """
+    try:
+        from databricks.sdk import WorkspaceClient
+        import openai
+        
+        logger.debug(f"Connecting to Databricks with profile: {profile}")
+        w = WorkspaceClient(profile=profile)
+        
+        # Get OAuth token and host from SDK
+        token = w.config.oauth_token()
+        host = w.config.host
+        
+        logger.debug(f"Databricks host: {host}")
+        logger.debug(f"Token obtained: {bool(token)}")
+        
+        # Create OpenAI client with Databricks endpoint
+        client = openai.OpenAI(
+            api_key=token.access_token,
+            base_url=f"{host}/serving-endpoints"
+        )
+        
+        logger.info(f"Databricks OpenAI client created for {host}")
+        return client, host
+        
+    except ImportError as e:
+        logger.error(f"Databricks SDK not installed: {e}")
+        return None, "databricks-sdk not installed. Run: pip install databricks-sdk"
+    except Exception as e:
+        logger.error(f"Databricks connection failed: {e}")
+        logger.error(traceback.format_exc())
+        return None, str(e)
 
 
 def get_call_types() -> dict:
@@ -171,6 +267,42 @@ def get_call_type(call_type_id: str) -> dict:
     """Get a specific call type configuration."""
     call_types = get_call_types()
     return call_types.get(call_type_id, call_types.get('generic', {}))
+
+
+def load_context_files(context_file_paths: list) -> str:
+    """
+    Load and concatenate multiple context files.
+    
+    Args:
+        context_file_paths: List of relative paths from repo root (e.g., 'Agent_context/shared.md')
+    
+    Returns:
+        Concatenated content of all context files
+    """
+    context_parts = []
+    repo_root = SCRIPT_DIR.parent  # Go up from processing-pipeline to repo root
+    
+    for file_path in context_file_paths:
+        full_path = repo_root / file_path
+        logger.debug(f"Loading context file: {full_path}")
+        
+        if full_path.exists():
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    context_parts.append(content)
+                    logger.debug(f"Loaded {len(content)} chars from {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load context file {file_path}: {e}")
+        else:
+            logger.warning(f"Context file not found: {full_path}")
+    
+    if context_parts:
+        combined = "\n\n---\n\n".join(context_parts)
+        logger.info(f"Loaded {len(context_parts)} context file(s), total {len(combined)} chars")
+        return combined
+    
+    return ""
 
 
 def set_diarize_setting(enabled: bool):
@@ -489,11 +621,28 @@ def begin_recording(
         title = details['title']
         call_type = details['call_type']
         person_name = details.get('person_name')
-    elif not title:
-        title = "Recording"
-        call_type = call_type or 'generic'
     else:
         call_type = call_type or 'generic'
+        
+        # Check if this call type requires a person name
+        call_types = get_call_types()
+        call_type_info = call_types.get(call_type, {})
+        call_type_name = call_type_info.get('name', 'Recording')
+        
+        if call_type_info.get('requires_person_name') and not person_name:
+            # Prompt for person name if not provided
+            print()
+            print("=" * 50)
+            print(f"🎙️  {call_type_name} Recording")
+            print("=" * 50)
+            person_name = input("👤 Enter person's name: ").strip()
+        
+        # Build title
+        if not title:
+            if person_name:
+                title = f"{call_type_name} - {person_name}"
+            else:
+                title = call_type_name
     
     # Generate paths
     paths = generate_paths(title)
@@ -736,17 +885,32 @@ def load_transcript(transcript_dir: str) -> Optional[str]:
     Load the transcript text from the output directory.
     Prefers .txt file, falls back to .json if needed.
     """
+    logger.debug(f"Loading transcript from: {transcript_dir}")
     transcript_path = Path(transcript_dir)
+    
+    if not transcript_path.exists():
+        logger.error(f"Transcript directory does not exist: {transcript_dir}")
+        return None
+    
+    # List all files in directory for debugging
+    all_files = list(transcript_path.glob('*'))
+    logger.debug(f"Files in transcript dir: {[f.name for f in all_files]}")
     
     # Try .txt file first (WhisperX outputs this)
     txt_files = list(transcript_path.glob('*.txt'))
+    logger.debug(f"Found {len(txt_files)} .txt files")
     if txt_files:
+        logger.info(f"Loading transcript from: {txt_files[0]}")
         with open(txt_files[0], 'r', encoding='utf-8') as f:
-            return f.read()
+            content = f.read()
+            logger.debug(f"Loaded {len(content)} chars from .txt file")
+            return content
     
     # Fall back to .json with word-level data
     json_files = list(transcript_path.glob('*.json'))
+    logger.debug(f"Found {len(json_files)} .json files")
     if json_files:
+        logger.info(f"Loading transcript from JSON: {json_files[0]}")
         with open(json_files[0], 'r', encoding='utf-8') as f:
             data = json.load(f)
             # Extract text from segments
@@ -759,8 +923,13 @@ def load_transcript(transcript_dir: str) -> Optional[str]:
                         lines.append(f"[{speaker}]: {text}")
                     else:
                         lines.append(text)
-                return '\n'.join(lines)
+                content = '\n'.join(lines)
+                logger.debug(f"Extracted {len(content)} chars from JSON segments")
+                return content
+            else:
+                logger.warning("JSON file has no 'segments' key")
     
+    logger.warning("No transcript files found")
     return None
 
 
@@ -784,12 +953,28 @@ def analyze_with_chatgpt(
     Returns:
         The analysis text, or None if failed
     """
+    logger.info(f"Starting ChatGPT analysis for: {title}")
+    logger.debug(f"Call type: {call_type_id}, Person: {person_name}")
+    
     if not is_openai_enabled():
+        logger.warning("OpenAI not configured - skipping analysis")
         print("⚠️  OpenAI not configured - skipping analysis")
         return None
     
     openai_config = get_openai_config()
     call_type = get_call_type(call_type_id)
+    
+    logger.debug(f"OpenAI config: model={openai_config.get('model')}, enabled={openai_config.get('enabled')}")
+    logger.debug(f"API key present: {bool(openai_config.get('api_key'))}")
+    logger.debug(f"API key length: {len(openai_config.get('api_key', ''))}")
+    
+    # Load context files if specified
+    context = ""
+    if 'context_files' in call_type:
+        context = load_context_files(call_type['context_files'])
+        if context:
+            logger.info(f"Loaded context for call type '{call_type_id}'")
+            print(f"📚 Loaded {len(call_type['context_files'])} context file(s)")
     
     # Get the prompt - handle template for 1:1s
     if call_type.get('requires_person_name') and person_name:
@@ -798,43 +983,96 @@ def analyze_with_chatgpt(
         prompt = call_type.get('prompt', '')
     
     if not prompt:
+        logger.warning(f"No prompt configured for call type '{call_type_id}' - using generic")
         print("⚠️  No prompt configured for call type - using generic")
         call_type = get_call_type('generic')
         prompt = call_type.get('prompt', 'Please summarize this transcript.')
     
-    # Prepare the message
-    system_message = prompt
+    logger.debug(f"Prompt length: {len(prompt)} chars")
+    
+    # Combine context and prompt into system message
+    if context:
+        system_message = f"{context}\n\n---\n\n{prompt}"
+        logger.debug(f"Combined context + prompt: {len(system_message)} chars")
+    else:
+        system_message = prompt
+    
     user_message = f"## Meeting: {title}\n\n## Transcript:\n\n{transcript}"
     
+    # Determine provider and model
+    provider = openai_config.get('provider', 'openai')
+    if provider == 'databricks':
+        model = openai_config.get('databricks_model', 'databricks-gpt-5-2')
+    else:
+        model = openai_config.get('model', 'gpt-4o')
+    
+    logger.info(f"Sending to ChatGPT: provider={provider}, model={model}, transcript_len={len(transcript)}")
     print("🤖 Analyzing transcript with ChatGPT...")
-    print(f"   Model: {openai_config.get('model', 'gpt-4o')}")
+    print(f"   Provider: {provider}")
+    print(f"   Model: {model}")
     print(f"   Call type: {call_type.get('name', call_type_id)}")
     if person_name:
         print(f"   Person: {person_name}")
     print()
     
     try:
-        # Use OpenAI API
         import openai
+        logger.debug(f"OpenAI library version: {openai.__version__}")
         
-        client = openai.OpenAI(api_key=openai_config['api_key'])
+        # Create client based on provider
+        if provider == 'databricks':
+            profile = openai_config.get('databricks_profile')
+            if not profile:
+                logger.error("Databricks profile not configured")
+                print("❌ Databricks profile not configured in openai.databricks_profile", file=sys.stderr)
+                return None
+            
+            client, host_or_error = get_databricks_openai_client(profile)
+            if not client:
+                logger.error(f"Databricks connection failed: {host_or_error}")
+                print(f"❌ Databricks auth failed: {host_or_error}", file=sys.stderr)
+                print(f"   Run: databricks auth login --profile {profile}", file=sys.stderr)
+                return None
+            
+            logger.info(f"Using Databricks: {host_or_error}")
+        else:
+            # Direct OpenAI
+            logger.debug("Creating direct OpenAI client...")
+            client = openai.OpenAI(api_key=openai_config['api_key'])
+            logger.info("Using direct OpenAI API")
         
-        response = client.chat.completions.create(
-            model=openai_config.get('model', 'gpt-4o'),
-            messages=[
+        logger.info("Calling ChatGPT API...")
+        
+        # Build API parameters
+        api_params = {
+            "model": model,
+            "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": user_message}
             ],
-            temperature=0.3,  # Lower temperature for more consistent analysis
-            max_tokens=4000
-        )
+            "temperature": 0.3,  # Lower temperature for more consistent analysis
+        }
+        
+        # Use max_completion_tokens for newer models (o1, gpt-5, etc.)
+        # Databricks models typically use max_tokens
+        if provider == 'openai' and model.startswith(('o1', 'gpt-5', 'gpt-4o-')):
+            api_params["max_completion_tokens"] = 4000
+        else:
+            api_params["max_tokens"] = 4000
+        
+        response = client.chat.completions.create(**api_params)
+        logger.info("ChatGPT API call successful")
         
         analysis = response.choices[0].message.content
+        logger.info(f"ChatGPT response received: {len(analysis)} chars")
+        logger.debug(f"Response preview: {analysis[:200]}...")
         
-        # Save analysis to file
+        # Save analysis to file with timestamp and model name for comparison
         if output_dir:
             output_path = Path(output_dir)
-            analysis_file = output_path / "chatgpt_analysis.md"
+            timestamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+            safe_model = model.replace('/', '-').replace(':', '-')  # Sanitize for filename
+            analysis_file = output_path / f"analysis_{timestamp}_{safe_model}.md"
             
             # Build the full output with metadata
             full_output = f"""# {call_type.get('name', 'Meeting')} Analysis
@@ -842,7 +1080,8 @@ def analyze_with_chatgpt(
 **Title:** {title}
 **Call Type:** {call_type.get('name', call_type_id)}
 **Analyzed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-**Model:** {openai_config.get('model', 'gpt-4o')}
+**Provider:** {provider}
+**Model:** {model}
 """
             if person_name:
                 full_output += f"**Person:** {person_name}\n"
@@ -853,17 +1092,23 @@ def analyze_with_chatgpt(
 {analysis}
 """
             
+            logger.debug(f"Writing analysis to: {analysis_file}")
             with open(analysis_file, 'w', encoding='utf-8') as f:
                 f.write(full_output)
             
+            logger.info(f"Analysis saved successfully: {analysis_file}")
             print(f"✅ Analysis saved: {analysis_file}")
         
         return analysis
         
-    except ImportError:
+    except ImportError as e:
+        logger.error(f"OpenAI package not installed: {e}")
+        logger.error(traceback.format_exc())
         print("❌ OpenAI package not installed. Run: pip install openai", file=sys.stderr)
         return None
     except Exception as e:
+        logger.error(f"ChatGPT analysis failed: {e}")
+        logger.error(traceback.format_exc())
         print(f"❌ ChatGPT analysis failed: {e}", file=sys.stderr)
         return None
 
@@ -1032,6 +1277,13 @@ def run_background_processing(bg_state_json: str):
     and ChatGPT analysis.
     This runs in a separate process spawned by end_recording.
     """
+    # Re-initialize logging for background process
+    setup_logging()
+    
+    logger.info("=" * 60)
+    logger.info("BACKGROUND PROCESSING STARTED")
+    logger.info("=" * 60)
+    
     bg_state = json.loads(bg_state_json)
     paths = bg_state['paths']
     title = bg_state['title']
@@ -1040,63 +1292,107 @@ def run_background_processing(bg_state_json: str):
     person_name = bg_state.get('person_name')
     my_pid = os.getpid()
     
+    logger.info(f"Processing: {title}")
+    logger.info(f"PID: {my_pid}")
+    logger.info(f"Call type: {call_type}")
+    logger.info(f"Diarize: {diarize}")
+    logger.info(f"Output dir: {paths['output_dir']}")
+    
     try:
         # Find the latest video file
+        logger.debug(f"Looking for video files in: {OBS_RECORD_DIR}")
         video_files = list(OBS_RECORD_DIR.glob('*.mov')) + \
                       list(OBS_RECORD_DIR.glob('*.mkv')) + \
                       list(OBS_RECORD_DIR.glob('*.mp4'))
         
+        logger.debug(f"Found {len(video_files)} video files")
+        
         if not video_files:
+            logger.error("No video file found!")
             notify("Processing Error", f"No video file found for: {title}")
             return False
         
         latest = max(video_files, key=lambda p: p.stat().st_mtime)
+        logger.info(f"Processing video: {latest}")
         
         # Move to output directory
         extension = latest.suffix
         video_file = Path(paths['output_dir']) / f"{paths['filename']}{extension}"
+        logger.debug(f"Moving to: {video_file}")
         latest.rename(video_file)
         
         # Extract audio
         audio_file = paths['audio_file']
-        subprocess.run([
+        logger.info(f"Extracting audio to: {audio_file}")
+        result = subprocess.run([
             'ffmpeg', '-i', str(video_file),
             '-ar', '16000', '-ac', '1',
             audio_file
-        ], capture_output=True)
+        ], capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logger.error(f"ffmpeg failed: {result.stderr}")
         
         # Verify and delete video
         if os.path.exists(audio_file) and os.path.getsize(audio_file) > 0:
+            logger.info(f"Audio extraction successful, size: {os.path.getsize(audio_file)} bytes")
             video_file.unlink()
+            logger.debug("Video file deleted")
         else:
+            logger.error(f"Audio extraction failed - file missing or empty")
             notify("Processing Error", f"Audio extraction failed for: {title}")
             return False
         
         # Run WhisperX transcription
+        logger.info("Starting WhisperX transcription...")
         run_whisperx(audio_file, paths['transcript_dir'], diarize=diarize)
+        logger.info("WhisperX transcription complete")
         
         # Run ChatGPT analysis if enabled
+        logger.info(f"Checking OpenAI status: enabled={is_openai_enabled()}")
         if is_openai_enabled():
+            logger.info("OpenAI is enabled, loading transcript...")
             transcript = load_transcript(paths['transcript_dir'])
             if transcript:
-                analyze_with_chatgpt(
+                logger.info(f"Transcript loaded: {len(transcript)} chars")
+                logger.debug(f"Transcript preview: {transcript[:200]}...")
+                
+                analysis = analyze_with_chatgpt(
                     transcript=transcript,
                     call_type_id=call_type,
                     person_name=person_name,
                     output_dir=paths['output_dir'],
                     title=title
                 )
-                notify("Analysis Complete", f"Finished: {title}")
+                
+                if analysis:
+                    logger.info("ChatGPT analysis completed successfully")
+                    notify("Analysis Complete", f"Finished: {title}")
+                else:
+                    logger.warning("ChatGPT analysis returned None")
+                    notify("Transcription Complete", f"Finished: {title} (analysis failed)")
             else:
+                logger.warning("No transcript found for analysis")
                 notify("Transcription Complete", f"Finished: {title} (no transcript for analysis)")
         else:
+            logger.info("OpenAI not enabled, skipping analysis")
             # Success notification
             notify("Transcription Complete", f"Finished: {title}")
         
+        logger.info("=" * 60)
+        logger.info("BACKGROUND PROCESSING COMPLETE")
+        logger.info("=" * 60)
         return True
+        
+    except Exception as e:
+        logger.error(f"Background processing failed: {e}")
+        logger.error(traceback.format_exc())
+        notify("Processing Error", f"Failed: {title}")
+        return False
         
     finally:
         # Remove only this job from the queue
+        logger.debug(f"Removing job from queue: PID {my_pid}")
         remove_processing_job(my_pid)
 
 
@@ -1143,9 +1439,12 @@ def main():
         print("  start [title]           - Start recording (prompts if not provided)")
         print("  stop                    - Stop recording and transcribe")
         print("  process <video> [title] - Process existing video file")
+        print("  analyze <folder>        - Run ChatGPT analysis on existing transcript")
         print("  config diarize <on|off> - Set default diarization preference")
         print("  types                   - List available call types")
         print("  status                  - Get current status (JSON output)")
+        print("  logs [N]                - Show last N log entries (default: 50)")
+        print("  logs-clear              - Clear all logs")
         print()
         print("Flags:")
         print("  --no-diarize            - Skip speaker diarization (faster, offline)")
@@ -1155,12 +1454,14 @@ def main():
         print()
         print(f"Current diarization default: {diarize_status}")
         print(f"OpenAI analysis: {openai_status}")
+        print(f"Log file: {LOG_FILE}")
         print()
         print("Examples:")
         print("  whisperx_recorder.py start                      # Interactive mode")
         print("  whisperx_recorder.py start 'Weekly Sync' --call-type team_meeting")
         print("  whisperx_recorder.py start '1:1 - John' --call-type one_on_one --person John")
         print("  whisperx_recorder.py process ~/video.mov --call-type interview_sa")
+        print("  whisperx_recorder.py logs 100                   # Show last 100 log entries")
         sys.exit(1)
     
     # Parse arguments
@@ -1248,7 +1549,100 @@ def main():
     elif command == 'status':
         status = get_status()
         status['diarize_default'] = get_diarize_setting()
+        status['openai_enabled'] = is_openai_enabled()
+        status['log_file'] = str(LOG_FILE)
         print(json.dumps(status, indent=2))
+    
+    elif command == 'logs':
+        # Show recent logs
+        lines = 50  # default
+        if len(args) > 1:
+            try:
+                lines = int(args[1])
+            except ValueError:
+                pass
+        
+        if LOG_FILE.exists():
+            with open(LOG_FILE, 'r') as f:
+                all_lines = f.readlines()
+                recent = all_lines[-lines:] if len(all_lines) > lines else all_lines
+                print(f"📋 Last {len(recent)} log entries from {LOG_FILE}:\n")
+                print("".join(recent))
+        else:
+            print(f"No log file found at {LOG_FILE}")
+    
+    elif command == 'logs-clear':
+        # Clear logs
+        if LOG_FILE.exists():
+            LOG_FILE.unlink()
+            print(f"✅ Logs cleared: {LOG_FILE}")
+        else:
+            print("No logs to clear")
+    
+    elif command == 'analyze':
+        # Manually run ChatGPT analysis on existing transcript
+        if len(args) < 2:
+            print("ERROR: Recording folder path required", file=sys.stderr)
+            print("Usage: whisperx_recorder.py analyze <recording_folder> [--call-type <type>]", file=sys.stderr)
+            print("Example: whisperx_recorder.py analyze ~/OBSRecordings/2026-01-16_Recording", file=sys.stderr)
+            sys.exit(1)
+        
+        recording_path = Path(args[1]).expanduser().resolve()
+        if not recording_path.exists():
+            print(f"ERROR: Path not found: {recording_path}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Find transcript directory
+        transcript_dirs = list(recording_path.glob('*_transcript'))
+        if not transcript_dirs:
+            print(f"ERROR: No transcript directory found in {recording_path}", file=sys.stderr)
+            sys.exit(1)
+        
+        transcript_dir = transcript_dirs[0]
+        
+        # Load metadata for title
+        metadata_files = list(recording_path.glob('*_metadata.json'))
+        title = "Recording"
+        if metadata_files:
+            with open(metadata_files[0], 'r') as f:
+                metadata = json.load(f)
+                title = metadata.get('meeting_title', 'Recording')
+        
+        call_type = flags.get('call_type', 'generic')
+        person_name = flags.get('person_name')
+        
+        print()
+        print(f"📋 Running ChatGPT analysis on: {recording_path.name}")
+        print(f"   Title: {title}")
+        print(f"   Call type: {call_type}")
+        print()
+        
+        # Load transcript
+        transcript = load_transcript(str(transcript_dir))
+        if not transcript:
+            print("ERROR: Could not load transcript", file=sys.stderr)
+            sys.exit(1)
+        
+        print(f"📝 Transcript loaded: {len(transcript)} characters")
+        print()
+        
+        # Run analysis
+        analysis = analyze_with_chatgpt(
+            transcript=transcript,
+            call_type_id=call_type,
+            person_name=person_name,
+            output_dir=str(recording_path),
+            title=title
+        )
+        
+        if analysis:
+            print()
+            print("✅ Analysis complete!")
+            sys.exit(0)
+        else:
+            print()
+            print("❌ Analysis failed - check logs with: whisperx-recorder logs")
+            sys.exit(1)
     
     elif command == '_process_background':
         # Internal command - called by spawn_background_processing
