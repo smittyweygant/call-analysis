@@ -119,15 +119,12 @@ Built-in call types with customized ChatGPT prompts:
 | Type | Icon | Description |
 |------|------|-------------|
 | `team_meeting` | 👥 | General team meetings |
-| `interview_fe_hm` | 👔 | FE Hiring Manager interviews |
-| `interview_fe_panel` | 🎯 | FE Panel interviews |
-| `one_on_one` | 👤 | 1:1 meetings (prompts for name) |
-| `pipeline_council` | 📊 | Sales pipeline reviews |
-| `ee_xteam_leader` | 🌟 | Cross-team leadership calls |
-| `ee_fe_leader` | ⚡ | Field Engineering leadership |
-| `sales_team` | 💼 | Sales team meetings |
-| `initiative_project` | 🚀 | Project/initiative meetings |
+| `interview` | 👔 | Interview evaluation (with example context files) |
+| `one_on_one` | 👤 | 1:1 meetings (prompts for person name) |
+| `project` | 🚀 | Project/initiative meetings |
 | `generic` | 🎙️ | Default recording |
+
+Add custom call types in `config.default.json`. See [USER_GUIDE.md](USER_GUIDE.md#customizing-prompts) for details.
 
 ## Output Structure
 

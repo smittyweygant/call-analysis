@@ -64,7 +64,7 @@ cat > ~/.local/bin/whisperx-recorder << 'EOF'
 #!/bin/bash
 clear
 PYTHON="$HOME/anaconda3/envs/whisperx-recorder/bin/python"
-SCRIPT="$HOME/Library/CloudStorage/OneDrive-Personal/Development/databricks/call-analysis/processing-pipeline/whisperx_recorder.py"
+SCRIPT="/path/to/call-analysis/processing-pipeline/whisperx_recorder.py"  # UPDATE THIS PATH
 
 if [[ "$1" == "start" && -z "$2" ]]; then
     "$PYTHON" "$SCRIPT" "$@"
@@ -77,6 +77,8 @@ EOF
 
 chmod +x ~/.local/bin/whisperx-recorder
 ```
+
+> **Important:** Update the `SCRIPT` path to match where you cloned the repository.
 
 Add to your PATH if needed:
 
@@ -342,24 +344,21 @@ whisperx-recorder analyze ~/OBSRecordings/2026-01-21_1on1 --call-type one_on_one
 whisperx-recorder types
 ```
 
-Output:
+Output (example with default types):
 ```
 Available Call Types:
 ==================================================
   👥 team_meeting        - Team Meeting 
-  👔 interview_fe_hm     - Interview: FE Hiring Manager 
-  🎯 interview_fe_panel  - Interview: FE Panel 
+  👔 interview           - Interview 
   👤 one_on_one          - 1:1 👤
-  📊 pipeline_council    - Pipeline Council Call 
-  🌟 ee_xteam_leader     - EE XTeam Leader Call 
-  ⚡ ee_fe_leader        - EE FE Leader Call 
-  💼 sales_team          - Sales Team Meeting 
-  🚀 initiative_project  - Initiative Project Meeting 
+  🚀 project             - Project Meeting 
   🎙️ generic             - Recording 
 
 Use with: --call-type <type_id>
 👤 = requires --person flag
 ```
+
+> **Note:** Your actual list may include additional custom call types defined in your `config.default.json`.
 
 #### `status` - Get Current Status
 
@@ -431,8 +430,8 @@ whisperx-recorder logs-clear
 # Record a team meeting
 whisperx-recorder start "Sprint Planning" --call-type team_meeting
 
-# Record a hiring manager interview
-whisperx-recorder start "Candidate X - HM" --call-type interview_fe_hm
+# Record an interview (with context files)
+whisperx-recorder start "Candidate Interview" --call-type interview
 
 # Record a 1:1 with John
 whisperx-recorder start "Weekly 1:1" --call-type one_on_one --person "John"
@@ -440,11 +439,11 @@ whisperx-recorder start "Weekly 1:1" --call-type one_on_one --person "John"
 # Quick recording without diarization
 whisperx-recorder start "Quick Note" --no-diarize
 
-# Process old video as panel interview
-whisperx-recorder process ~/Downloads/panel_recording.mov --call-type interview_fe_panel
+# Process an existing video
+whisperx-recorder process ~/Downloads/meeting.mov --call-type team_meeting
 
 # Re-analyze with different call type
-whisperx-recorder analyze ~/OBSRecordings/2026-01-21_Meeting --call-type pipeline_council
+whisperx-recorder analyze ~/OBSRecordings/2026-01-21_Meeting --call-type project
 ```
 
 ---
@@ -456,31 +455,30 @@ whisperx-recorder analyze ~/OBSRecordings/2026-01-21_Meeting --call-type pipelin
 | ID | Name | Use Case |
 |----|------|----------|
 | `team_meeting` | Team Meeting | General team syncs, standups |
-| `interview_fe_hm` | Interview: FE Hiring Manager | Hiring manager interviews (loads evaluation context) |
-| `interview_fe_panel` | Interview: FE Panel | Panel presentation interviews (loads evaluation context) |
+| `interview` | Interview | Candidate interviews (demonstrates context files) |
 | `one_on_one` | 1:1 | One-on-one meetings (requires `--person`) |
-| `pipeline_council` | Pipeline Council Call | Sales pipeline reviews |
-| `ee_xteam_leader` | EE XTeam Leader Call | Cross-team leadership |
-| `ee_fe_leader` | EE FE Leader Call | FE leadership meetings |
-| `sales_team` | Sales Team Meeting | Sales team syncs |
-| `initiative_project` | Initiative Project | Project/initiative meetings |
+| `project` | Project Meeting | Project/initiative meetings |
 | `generic` | Recording | Default, general summary |
 
-### Interview Call Types
+### Call Types with Context Files
 
-The `interview_fe_hm` and `interview_fe_panel` call types load additional context files:
+The `interview` call type demonstrates loading external context files. These files provide additional information to the AI for more tailored analysis:
 
-**Hiring Manager (`interview_fe_hm`):**
-- `Agent_context/fe_interview_context_shared.md` - Role framework, levels, values
-- `Agent_context/fe_interview_context_hiring_manager.md` - HM-specific signals
-- `Agent_context/fe_interview_context_greenhouse.md` - Question handling
-- `Agent_context/fe_interview_greenhouse_question_sets.md` - Exact Greenhouse questions
+```json
+{
+  "interview": {
+    "name": "Interview",
+    "icon": "👔",
+    "context_files": [
+      "examples/context/interview_shared_context.md",
+      "examples/context/interview_rubric.md"
+    ],
+    "prompt": "Evaluate using the provided context..."
+  }
+}
+```
 
-**Panel (`interview_fe_panel`):**
-- `Agent_context/fe_interview_context_shared.md` - Role framework, levels, values
-- `Agent_context/fe_interview_context_panel_presentation_demo.md` - Panel-specific signals
-- `Agent_context/fe_interview_context_greenhouse.md` - Question handling
-- `Agent_context/fe_interview_greenhouse_question_sets.md` - Exact Greenhouse questions
+See the `examples/` folder for sample context files you can customize.
 
 ---
 
