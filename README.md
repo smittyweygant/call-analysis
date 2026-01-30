@@ -8,7 +8,8 @@ A macOS menu bar application for recording calls/meetings with OBS, transcribing
 - 📝 **Automatic transcription** using WhisperX (OpenAI Whisper)
 - 🎤 **Speaker diarization** (optional) - identifies who said what
 - 🤖 **ChatGPT analysis** - AI-powered summaries with customizable prompts
-- 📋 **Call type templates** - tailored prompts for interviews, 1:1s, team meetings
+- 📋 **Call type templates** - tailored prompts for different meeting types
+- 📤 **Google Drive integration** - auto-upload analysis to Shared Drive as Google Docs
 - ⏳ **Background processing** - start new recordings while previous ones transcribe
 - 🔔 **macOS notifications** for recording status and completion
 - 📁 **Organized output** - recordings organized by date and title
@@ -27,6 +28,15 @@ A macOS menu bar application for recording calls/meetings with OBS, transcribing
                         │  - Extract audio     │
                         │  - Run WhisperX      │
                         │  - ChatGPT Analysis  │
+                        │  - Google Drive Upload│
+                        └──────────────────────┘
+                                  │
+                                  ▼
+                        ┌──────────────────────┐
+                        │   Google Drive       │
+                        │   (Shared Drive)     │
+                        │   - Folders by type  │
+                        │   - Google Docs      │
                         └──────────────────────┘
 ```
 
@@ -91,6 +101,11 @@ chmod +x ~/.local/bin/whisperx-recorder
     "whisperx_path": "~/anaconda3/bin/whisperx",
     "hf_token": "YOUR_HUGGINGFACE_TOKEN"
   },
+  "gdrive": {
+    "enabled": false,
+    "service_account_file": "your-service-account.json",
+    "shared_drive_id": "YOUR_SHARED_DRIVE_ID"
+  },
   "openai": {
     "api_key": "YOUR_OPENAI_API_KEY",
     "model": "gpt-4o",
@@ -114,17 +129,24 @@ Personal settings that override project defaults:
 
 ## Call Types
 
-Built-in call types with customized ChatGPT prompts:
+Example call types included in the template:
 
 | Type | Icon | Description |
 |------|------|-------------|
 | `team_meeting` | 👥 | General team meetings |
 | `interview` | 👔 | Interview evaluation (with example context files) |
 | `one_on_one` | 👤 | 1:1 meetings (prompts for person name) |
+| `customer_meeting` | 🤝 | Customer calls (prompts for company name) |
 | `project` | 🚀 | Project/initiative meetings |
 | `generic` | 🎙️ | Default recording |
 
-Add custom call types in `config.default.json`. See [USER_GUIDE.md](USER_GUIDE.md#customizing-prompts) for details.
+Call types support:
+- **`prompt`** - Inline prompt text
+- **`prompt_file`** - Load prompt from external markdown file
+- **`context_files`** - Load context from markdown/PDF files
+- **`name_prompt`** - Custom input prompt (e.g., "Enter customer name")
+
+Add or customize call types in `config.default.json`. See [USER_GUIDE.md](USER_GUIDE.md#customizing-prompts) for details.
 
 ## Output Structure
 

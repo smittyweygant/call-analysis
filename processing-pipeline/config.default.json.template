@@ -1,6 +1,6 @@
 {
   "_comment": "WhisperX Recorder Default Configuration",
-  "_docs": "Copy this file to config.default.json and fill in your values",
+  "_docs": "Copy this file to config.default.json and fill in your values. User overrides go in ~/.config/whisperx/settings.json",
   
   "recording": {
     "output_dir": "~/OBSRecordings",
@@ -17,13 +17,23 @@
     "hf_token": "YOUR_HUGGINGFACE_TOKEN"
   },
   
+  "gdrive": {
+    "_comment": "Google Drive integration - uploads analysis to Shared Drive as Google Docs",
+    "enabled": false,
+    "service_account_file": "YOUR_SERVICE_ACCOUNT_FILE.json",
+    "shared_drive_id": "YOUR_SHARED_DRIVE_ID",
+    "_docs": "Folders are auto-created per call_type name. Service account needs Content Manager access to Shared Drive."
+  },
+  
   "openai": {
+    "_comment": "LLM provider for analysis. Supports 'openai' or 'databricks'",
     "provider": "openai",
     "enabled": true,
     
     "api_key": "YOUR_OPENAI_API_KEY",
     "model": "gpt-4o",
     
+    "_databricks_docs": "For Databricks, set provider to 'databricks' and configure profile from ~/.databrickscfg",
     "databricks_profile": "YOUR_DATABRICKS_PROFILE",
     "databricks_model": "databricks-model-name"
   },
@@ -37,7 +47,7 @@
       "prompt": "You are analyzing a team meeting transcript. Please provide:\n1. **Meeting Summary** - A concise overview of what was discussed\n2. **Key Decisions** - Any decisions that were made\n3. **Action Items** - Tasks assigned with owners if mentioned\n4. **Follow-ups** - Items that need future attention\n\nBe specific and actionable in your analysis."
     },
     "interview": {
-      "_comment": "Example showing context_files usage. See examples/ folder for sample context files. Files load from context_base_path (user settings) or repo root",
+      "_comment": "Example showing context_files usage. Files load from context_base_path (user settings) or examples/ folder",
       "name": "Interview",
       "icon": "👔",
       "context_files": [
@@ -51,6 +61,17 @@
       "icon": "👤",
       "prompt_template": "You are analyzing a 1:1 meeting transcript with {person_name}. Please provide:\n1. **Discussion Topics** - Main subjects covered\n2. **Employee Concerns** - Any issues or blockers raised\n3. **Career Development** - Growth discussions or goals mentioned\n4. **Action Items** - Follow-ups for both manager and employee\n5. **Sentiment** - Overall tone and engagement level\n6. **Notes for Next 1:1** - Topics to revisit",
       "requires_person_name": true
+    },
+    "customer_meeting": {
+      "_comment": "Customer meetings prompt for company name. prompt_file loads from external markdown.",
+      "name": "Customer Meeting",
+      "icon": "🤝",
+      "context_files": [
+        "Agent_context/customer_meeting_context.md"
+      ],
+      "prompt_file": "Agent_prompts/customer_meeting_evaluation_prompt.md",
+      "requires_person_name": true,
+      "name_prompt": "Enter customer/company name"
     },
     "project": {
       "name": "Project Meeting",

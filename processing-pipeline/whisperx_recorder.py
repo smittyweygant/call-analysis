@@ -14,6 +14,7 @@ Configuration:
 - User overrides: ~/.config/whisperx/settings.json (personal settings)
 """
 
+import io
 import json
 import logging
 import os
@@ -267,6 +268,260 @@ def get_call_type(call_type_id: str) -> dict:
     """Get a specific call type configuration."""
     call_types = get_call_types()
     return call_types.get(call_type_id, call_types.get('generic', {}))
+
+
+# ─── Google Drive Integration ────────────────────────────────────────────────
+
+def get_gdrive_config() -> dict:
+    """Get Google Drive configuration."""
+    return _config.get('gdrive', {})
+
+
+def is_gdrive_enabled() -> bool:
+    """Check if Google Drive upload is enabled."""
+    return get_gdrive_config().get('enabled', False)
+
+
+def get_gdrive_service():
+    """
+    Create and return an authenticated Google Drive service.
+    
+    Returns:
+        tuple: (service, error_message) - service is None if failed
+    """
+    if not is_gdrive_enabled():
+        return None, "Google Drive upload not enabled"
+    
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        
+        gdrive_config = get_gdrive_config()
+        sa_file = gdrive_config.get('service_account_file', '')
+        
+        # Look for service account file in project directory
+        sa_path = SCRIPT_DIR.parent / sa_file
+        if not sa_path.exists():
+            # Also check in processing-pipeline directory
+            sa_path = SCRIPT_DIR / sa_file
+        
+        if not sa_path.exists():
+            return None, f"Service account file not found: {sa_file}"
+        
+        scopes = ['https://www.googleapis.com/auth/drive']
+        credentials = service_account.Credentials.from_service_account_file(
+            str(sa_path),
+            scopes=scopes
+        )
+        
+        service = build('drive', 'v3', credentials=credentials)
+        logger.info("Google Drive service created successfully")
+        return service, None
+        
+    except ImportError as e:
+        return None, f"Google API client not installed: {e}. Run: pip install google-api-python-client google-auth"
+    except Exception as e:
+        logger.error(f"Failed to create Google Drive service: {e}")
+        return None, str(e)
+
+
+# Cache for folder IDs to avoid repeated API calls
+_gdrive_folder_cache = {}
+
+
+def get_or_create_gdrive_folder(service, folder_name: str, parent_id: str = None) -> Optional[str]:
+    """
+    Get existing folder ID or create new folder in Google Drive.
+    
+    Args:
+        service: Google Drive service
+        folder_name: Name of the folder
+        parent_id: Parent folder/drive ID (defaults to configured shared_drive_id)
+    
+    Returns:
+        Folder ID or None if failed
+    """
+    global _gdrive_folder_cache
+    
+    gdrive_config = get_gdrive_config()
+    if parent_id is None:
+        parent_id = gdrive_config.get('shared_drive_id', '')
+    
+    cache_key = f"{parent_id}:{folder_name}"
+    if cache_key in _gdrive_folder_cache:
+        return _gdrive_folder_cache[cache_key]
+    
+    try:
+        # Search for existing folder
+        query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and '{parent_id}' in parents and trashed = false"
+        results = service.files().list(
+            q=query,
+            spaces='drive',
+            fields='files(id, name)',
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            corpora='drive',
+            driveId=parent_id
+        ).execute()
+        
+        files = results.get('files', [])
+        if files:
+            folder_id = files[0]['id']
+            logger.info(f"Found existing folder: {folder_name} ({folder_id})")
+            _gdrive_folder_cache[cache_key] = folder_id
+            return folder_id
+        
+        # Create new folder
+        file_metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [parent_id]
+        }
+        
+        folder = service.files().create(
+            body=file_metadata,
+            fields='id, name',
+            supportsAllDrives=True
+        ).execute()
+        
+        folder_id = folder.get('id')
+        logger.info(f"Created new folder: {folder_name} ({folder_id})")
+        _gdrive_folder_cache[cache_key] = folder_id
+        return folder_id
+        
+    except Exception as e:
+        logger.error(f"Failed to get/create folder '{folder_name}': {e}")
+        return None
+
+
+def markdown_to_html(md_content: str) -> str:
+    """
+    Convert markdown content to HTML for Google Docs import.
+    """
+    try:
+        import markdown
+        
+        md = markdown.Markdown(extensions=[
+            'tables',
+            'fenced_code',
+            'nl2br',
+            'sane_lists',
+        ])
+        
+        html_content = md.convert(md_content)
+        
+        html_doc = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    body {{ font-family: Arial, sans-serif; line-height: 1.6; }}
+    h1, h2, h3 {{ color: #333; }}
+    code {{ background-color: #f4f4f4; padding: 2px 6px; border-radius: 3px; }}
+    pre {{ background-color: #f4f4f4; padding: 12px; border-radius: 5px; overflow-x: auto; }}
+    blockquote {{ border-left: 4px solid #ddd; margin-left: 0; padding-left: 16px; color: #666; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+    th {{ background-color: #f4f4f4; }}
+</style>
+</head>
+<body>
+{html_content}
+</body>
+</html>"""
+        
+        return html_doc
+    except ImportError:
+        logger.warning("markdown library not installed, uploading as plain text")
+        return md_content
+
+
+def upload_to_gdrive(
+    analysis_file: Path,
+    call_type_name: str,
+    title: str,
+    analyzed_date: datetime = None
+) -> Optional[str]:
+    """
+    Upload analysis file to Google Drive as a Google Doc.
+    
+    Args:
+        analysis_file: Path to the analysis markdown file
+        call_type_name: Human-readable call type name (e.g., "Interview: AE:FE Mgr")
+        title: Meeting/interview title (person name, etc.)
+        analyzed_date: When the analysis was run
+    
+    Returns:
+        Google Doc URL or None if failed
+    """
+    if not is_gdrive_enabled():
+        logger.debug("Google Drive upload not enabled, skipping")
+        return None
+    
+    service, error = get_gdrive_service()
+    if not service:
+        logger.warning(f"Google Drive service unavailable: {error}")
+        return None
+    
+    try:
+        from googleapiclient.http import MediaIoBaseUpload
+        
+        gdrive_config = get_gdrive_config()
+        shared_drive_id = gdrive_config.get('shared_drive_id', '')
+        
+        # Get or create folder for this call type
+        folder_id = get_or_create_gdrive_folder(service, call_type_name, shared_drive_id)
+        if not folder_id:
+            logger.error(f"Could not get/create folder for: {call_type_name}")
+            return None
+        
+        # Generate document name: <Call Type> <yy_mm_dd> - <title>
+        if analyzed_date is None:
+            analyzed_date = datetime.now()
+        date_str = analyzed_date.strftime('%y_%m_%d')
+        
+        # Clean up title for display
+        clean_title = title.replace('_', ' ') if title else 'Untitled'
+        doc_name = f"{call_type_name} {date_str} - {clean_title}"
+        
+        # Read and convert markdown to HTML
+        with open(analysis_file, 'r', encoding='utf-8') as f:
+            md_content = f.read()
+        
+        html_content = markdown_to_html(md_content)
+        
+        # File metadata for Google Doc conversion
+        file_metadata = {
+            'name': doc_name,
+            'parents': [folder_id],
+            'mimeType': 'application/vnd.google-apps.document'
+        }
+        
+        # Upload as HTML for conversion
+        media = MediaIoBaseUpload(
+            io.BytesIO(html_content.encode('utf-8')),
+            mimetype='text/html',
+            resumable=True
+        )
+        
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, name, webViewLink',
+            supportsAllDrives=True
+        ).execute()
+        
+        doc_url = file.get('webViewLink')
+        logger.info(f"Uploaded to Google Drive: {doc_name}")
+        logger.info(f"  Folder: {call_type_name}")
+        logger.info(f"  URL: {doc_url}")
+        
+        return doc_url
+        
+    except Exception as e:
+        logger.error(f"Failed to upload to Google Drive: {e}")
+        logger.error(traceback.format_exc())
+        return None
 
 
 def load_pdf_content(file_path: Path) -> str:
@@ -610,11 +865,12 @@ def prompt_for_recording_details() -> dict:
     call_type = call_types.get(selected_type, {})
     call_type_name = call_type.get('name', 'Recording')
     
-    # Check if we need person name (for 1:1s)
+    # Check if we need a name input (for 1:1s, customer meetings, etc.)
     person_name = None
     if call_type.get('requires_person_name'):
         print()
-        person_name = input("👤 Enter person's name: ").strip()
+        name_prompt = call_type.get('name_prompt', "Enter person's name")
+        person_name = input(f"👤 {name_prompt}: ").strip()
         if person_name:
             # Include person name in title
             title = f"{call_type_name} - {person_name}"
@@ -684,12 +940,13 @@ def begin_recording(
         call_type_name = call_type_info.get('name', 'Recording')
         
         if call_type_info.get('requires_person_name') and not person_name:
-            # Prompt for person name if not provided
+            # Prompt for name if not provided (supports custom prompt text)
             print()
             print("=" * 50)
             print(f"🎙️  {call_type_name} Recording")
             print("=" * 50)
-            person_name = input("👤 Enter person's name: ").strip()
+            name_prompt = call_type_info.get('name_prompt', "Enter person's name")
+            person_name = input(f"👤 {name_prompt}: ").strip()
         
         # Build title
         if not title:
@@ -1030,11 +1287,35 @@ def analyze_with_chatgpt(
             logger.info(f"Loaded context for call type '{call_type_id}'")
             print(f"📚 Loaded {len(call_type['context_files'])} context file(s)")
     
-    # Get the prompt - handle template for 1:1s
-    if call_type.get('requires_person_name') and person_name:
-        prompt = call_type.get('prompt_template', '').format(person_name=person_name)
-    else:
-        prompt = call_type.get('prompt', '')
+    # Get the prompt - supports external file, template, or inline prompt
+    prompt = ''
+    
+    # Try loading from external prompt file first
+    if call_type.get('prompt_file'):
+        prompt_file_path = call_type['prompt_file']
+        base_path = Path(_config.get('context_base_path', SCRIPT_DIR.parent))
+        full_path = base_path / prompt_file_path
+        
+        if full_path.exists():
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    prompt = f.read()
+                logger.info(f"Loaded prompt from file: {prompt_file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load prompt file {prompt_file_path}: {e}")
+        else:
+            logger.warning(f"Prompt file not found: {full_path}")
+    
+    # Fall back to inline prompt or template
+    if not prompt:
+        if call_type.get('requires_person_name') and person_name:
+            prompt = call_type.get('prompt_template', '')
+        else:
+            prompt = call_type.get('prompt', '')
+    
+    # Substitute person_name if present in prompt (works for both file and inline)
+    if person_name and '{person_name}' in prompt:
+        prompt = prompt.format(person_name=person_name)
     
     if not prompt:
         logger.warning(f"No prompt configured for call type '{call_type_id}' - using generic")
@@ -1152,6 +1433,20 @@ def analyze_with_chatgpt(
             
             logger.info(f"Analysis saved successfully: {analysis_file}")
             print(f"✅ Analysis saved: {analysis_file}")
+            
+            # Upload to Google Drive if enabled
+            if is_gdrive_enabled():
+                print("📤 Uploading to Google Drive...")
+                gdrive_url = upload_to_gdrive(
+                    analysis_file=analysis_file,
+                    call_type_name=call_type.get('name', 'Analysis'),
+                    title=title,
+                    analyzed_date=datetime.now()
+                )
+                if gdrive_url:
+                    print(f"✅ Google Doc: {gdrive_url}")
+                else:
+                    print("⚠️  Google Drive upload failed (see logs)")
         
         return analysis
         

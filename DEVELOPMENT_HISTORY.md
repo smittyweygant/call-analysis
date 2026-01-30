@@ -178,6 +178,49 @@ interview_fe_panel:
 - No git submodule complexity
 - Graceful fallback if files missing
 
+### Phase 9: Google Drive Integration (January 2026)
+
+**Goal:** Auto-upload analysis files to Google Drive for easy sharing
+
+**Implementation:**
+- Service account authentication for Shared Drives
+- Auto-create folders per call type
+- Convert markdown to HTML for Google Docs formatting
+- Document naming: `<Call Type> <yy_mm_dd> - <title>`
+
+**Configuration:**
+```json
+{
+  "gdrive": {
+    "enabled": true,
+    "service_account_file": "service-account.json",
+    "shared_drive_id": "DRIVE_ID"
+  }
+}
+```
+
+**Key Decision:** Use Shared Drive (not My Drive) because service accounts have no storage quota for regular Drive.
+
+### Phase 10: External Prompt Files (January 2026)
+
+**Problem:** Long prompts cluttered the config file; prompts needed separate versioning
+
+**Solution:** `prompt_file` config option to load prompts from external markdown files
+
+```json
+{
+  "interview_fe_hm": {
+    "context_files": ["Agent_context/..."],
+    "prompt_file": "Agent_prompts/hm_interview_fe_evaluation_prompt.md"
+  }
+}
+```
+
+**Additional Features:**
+- `name_prompt` - Custom input prompts (e.g., "Enter customer name" vs "Enter person's name")
+- PDF context file support via `pypdf` library
+- Customer Meeting call type with company name prompt
+
 ---
 
 ## Key Technical Decisions
@@ -260,10 +303,13 @@ Flags:
 
 | Package | Purpose |
 |---------|---------|
-| `google-api-python-client` | Google Calendar API (attempted) |
+| `google-api-python-client` | Google Drive API |
 | `google-auth` | Google authentication |
 | `google-auth-oauthlib` | OAuth2 flow |
 | `openai` | ChatGPT API |
+| `databricks-sdk` | Databricks OAuth authentication |
+| `pypdf` | PDF context file parsing |
+| `markdown` | Markdown to HTML conversion for GDrive |
 | `whisperx` | Speech recognition |
 | `ffmpeg` | Audio extraction (system) |
 | `obs-cmd` | OBS control (system) |
@@ -289,12 +335,29 @@ Flags:
     "whisperx_path": "~/anaconda3/bin/whisperx",
     "hf_token": "YOUR_HF_TOKEN"
   },
+  "gdrive": {
+    "enabled": false,
+    "service_account_file": "service-account.json",
+    "shared_drive_id": "DRIVE_ID"
+  },
   "openai": {
+    "provider": "openai",
     "api_key": "YOUR_OPENAI_KEY",
     "model": "gpt-4o",
-    "enabled": true
+    "enabled": true,
+    "databricks_profile": "YOUR_PROFILE",
+    "databricks_model": "databricks-gpt-5-2"
   },
-  "call_types": { ... }
+  "call_types": {
+    "example": {
+      "name": "Example",
+      "icon": "📝",
+      "context_files": ["path/to/context.md"],
+      "prompt_file": "path/to/prompt.md",
+      "requires_person_name": true,
+      "name_prompt": "Enter name"
+    }
+  }
 }
 ```
 
@@ -321,4 +384,5 @@ Detailed implementation plans are preserved in `~/.cursor/plans/`:
 ---
 
 *Document generated: January 2026*
+*Last updated: January 30, 2026 - Added Google Drive integration, external prompt files, Customer Meeting type*
 *Cursor conversation transcript archived to: `~/.cursor/projects/.../agent-transcripts-archive/`*

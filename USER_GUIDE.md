@@ -8,11 +8,12 @@ Complete guide for installation, configuration, and daily usage.
 
 1. [Installation](#installation)
 2. [Configuration](#configuration)
-3. [Menu Bar Usage](#menu-bar-usage)
-4. [Command-Line Interface](#command-line-interface)
-5. [Call Types](#call-types)
-6. [Customizing Prompts](#customizing-prompts)
-7. [Troubleshooting](#troubleshooting)
+3. [Google Drive Integration](#google-drive-integration)
+4. [Menu Bar Usage](#menu-bar-usage)
+5. [Command-Line Interface](#command-line-interface)
+6. [Call Types](#call-types)
+7. [Customizing Prompts](#customizing-prompts)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -230,6 +231,59 @@ EOF
 
 ---
 
+## Google Drive Integration
+
+Analysis files can be automatically uploaded to a Google Shared Drive as formatted Google Docs.
+
+### Setup
+
+**1. Create a Google Cloud Service Account:**
+
+- Go to [Google Cloud Console](https://console.cloud.google.com/)
+- Create a new project or use an existing one
+- Enable the Google Drive API
+- Create a Service Account and download the JSON key file
+- Place the JSON file in your `call-analysis` directory
+
+**2. Create a Shared Drive:**
+
+- In Google Drive, create a new Shared Drive
+- Add the service account email (from the JSON file) as a "Content Manager"
+- Copy the Shared Drive ID from the URL: `https://drive.google.com/drive/folders/<DRIVE_ID>`
+
+**3. Configure:**
+
+```json
+{
+  "gdrive": {
+    "enabled": true,
+    "service_account_file": "your-service-account.json",
+    "shared_drive_id": "YOUR_SHARED_DRIVE_ID"
+  }
+}
+```
+
+### Features
+
+- **Auto-upload after analysis** - Analysis files upload automatically when processing completes
+- **Folder organization** - Folders are auto-created per call type (e.g., "Customer Meeting", "Interview: FE Panel")
+- **Formatted Google Docs** - Markdown is converted to HTML for proper formatting in Google Docs
+- **Document naming** - Format: `<Call Type> <yy_mm_dd> - <title>`
+
+### User Settings
+
+Enable/disable in your `~/.config/whisperx/settings.json`:
+
+```json
+{
+  "gdrive": {
+    "enabled": true
+  }
+}
+```
+
+---
+
 ## Menu Bar Usage
 
 ### Status Icons
@@ -315,7 +369,7 @@ whisperx-recorder process ~/Videos/meeting.mov
 whisperx-recorder process ~/Videos/meeting.mov "Q1 Planning"
 
 # With call type
-whisperx-recorder process ~/Videos/interview.mov --call-type interview_fe_hm
+whisperx-recorder process ~/Videos/interview.mov --call-type interview
 
 # Full example
 whisperx-recorder process ~/Videos/john_1on1.mov "1:1 - John" --call-type one_on_one --person "John" --no-diarize
@@ -332,7 +386,7 @@ Re-run analysis on existing transcript:
 whisperx-recorder analyze ~/OBSRecordings/2026-01-21_Meeting
 
 # With specific call type
-whisperx-recorder analyze ~/OBSRecordings/2026-01-21_Interview --call-type interview_fe_hm
+whisperx-recorder analyze ~/OBSRecordings/2026-01-21_Interview --call-type interview
 
 # For 1:1 with person name
 whisperx-recorder analyze ~/OBSRecordings/2026-01-21_1on1 --call-type one_on_one --person "Sarah"
@@ -450,15 +504,18 @@ whisperx-recorder analyze ~/OBSRecordings/2026-01-21_Meeting --call-type project
 
 ## Call Types
 
-### Built-in Call Types
+### Example Call Types (from template)
 
 | ID | Name | Use Case |
 |----|------|----------|
 | `team_meeting` | Team Meeting | General team syncs, standups |
 | `interview` | Interview | Candidate interviews (demonstrates context files) |
 | `one_on_one` | 1:1 | One-on-one meetings (requires `--person`) |
+| `customer_meeting` | Customer Meeting | Customer calls (prompts for company name) |
 | `project` | Project Meeting | Project/initiative meetings |
 | `generic` | Recording | Default, general summary |
+
+These are examples from `config.default.json.template`. Add your own custom call types as needed.
 
 ### Call Types with Context Files
 
@@ -491,10 +548,10 @@ Edit `config.default.json`:
 ```json
 {
   "call_types": {
-    "customer_call": {
-      "name": "Customer Call",
-      "icon": "🤝",
-      "prompt": "You are analyzing a customer call. Please provide:\n1. **Customer Name & Context**\n2. **Issues Discussed**\n3. **Commitments Made**\n4. **Follow-up Actions**\n5. **Risk Flags**"
+    "sales_call": {
+      "name": "Sales Call",
+      "icon": "💰",
+      "prompt": "You are analyzing a sales call. Please provide:\n1. **Opportunity Overview**\n2. **Customer Pain Points**\n3. **Competitive Mentions**\n4. **Next Steps**\n5. **Deal Risk Assessment**"
     }
   }
 }
@@ -502,7 +559,7 @@ Edit `config.default.json`:
 
 ### Using Template Variables
 
-For call types requiring dynamic input (like person names):
+For call types requiring dynamic input (like person or company names):
 
 ```json
 {
@@ -514,6 +571,48 @@ For call types requiring dynamic input (like person names):
   }
 }
 ```
+
+### Custom Input Prompts
+
+Customize what the user is asked to enter with `name_prompt`:
+
+```json
+{
+  "customer_call": {
+    "name": "Customer Call",
+    "icon": "🤝",
+    "prompt_template": "Analyzing call with {person_name}...",
+    "requires_person_name": true,
+    "name_prompt": "Enter customer/company name"
+  }
+}
+```
+
+### Using External Prompt Files
+
+For complex prompts, load from external markdown files using `prompt_file`:
+
+```json
+{
+  "complex_interview": {
+    "name": "Complex Interview",
+    "icon": "📋",
+    "context_files": [
+      "Agent_context/interview_context.md",
+      "Agent_context/interview_rubric.pdf"
+    ],
+    "prompt_file": "Agent_prompts/interview_evaluation_prompt.md"
+  }
+}
+```
+
+The prompt file is loaded from `context_base_path` and supports `{person_name}` substitution.
+
+**Benefits of external prompt files:**
+- Version control prompts separately
+- Easier to edit and review long prompts
+- Share prompts across call types
+- Keep config file clean and readable
 
 ### Example Prompt Files
 
