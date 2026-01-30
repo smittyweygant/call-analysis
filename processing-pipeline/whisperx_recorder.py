@@ -269,9 +269,38 @@ def get_call_type(call_type_id: str) -> dict:
     return call_types.get(call_type_id, call_types.get('generic', {}))
 
 
+def load_pdf_content(file_path: Path) -> str:
+    """
+    Extract text content from a PDF file.
+    
+    Args:
+        file_path: Path to the PDF file
+    
+    Returns:
+        Extracted text content from all pages
+    """
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(file_path)
+        text_parts = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                text_parts.append(text)
+        return "\n\n".join(text_parts)
+    except ImportError:
+        logger.warning("pypdf not installed - cannot read PDF files. Install with: pip install pypdf")
+        return ""
+    except Exception as e:
+        logger.warning(f"Failed to extract text from PDF {file_path}: {e}")
+        return ""
+
+
 def load_context_files(context_file_paths: list) -> str:
     """
     Load and concatenate multiple context files.
+    
+    Supports text files (.md, .txt, etc.) and PDF files (.pdf).
     
     Args:
         context_file_paths: List of relative paths (e.g., 'interview/shared_context.md')
@@ -303,10 +332,20 @@ def load_context_files(context_file_paths: list) -> str:
         
         if full_path.exists():
             try:
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    context_parts.append(content)
-                    logger.debug(f"Loaded {len(content)} chars from {file_path}")
+                # Handle PDF files
+                if full_path.suffix.lower() == '.pdf':
+                    content = load_pdf_content(full_path)
+                    if content:
+                        context_parts.append(content)
+                        logger.debug(f"Loaded {len(content)} chars from PDF {file_path}")
+                    else:
+                        logger.warning(f"No text extracted from PDF {file_path}")
+                else:
+                    # Handle text files (markdown, txt, etc.)
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        context_parts.append(content)
+                        logger.debug(f"Loaded {len(content)} chars from {file_path}")
             except Exception as e:
                 logger.warning(f"Failed to load context file {file_path}: {e}")
         else:

@@ -6,6 +6,9 @@ openai>=1.0.0
 # Databricks SDK for OAuth token management (optional - for Databricks-hosted models)
 databricks-sdk>=0.20.0
 
+# PDF support for context files
+pypdf>=4.0.0
+
 # WhisperX and its dependencies should be installed separately:
 #   pip install whisperx
 #
