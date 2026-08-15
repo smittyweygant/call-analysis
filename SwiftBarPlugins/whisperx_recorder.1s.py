@@ -1,10 +1,10 @@
-#!/Users/smitty.weygant/anaconda3/envs/whisperx-recorder/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # <xbar.title>WhisperX Recorder</xbar.title>
 # <xbar.version>v3.0</xbar.version>
 # <xbar.author>Smitty Weygant</xbar.author>
-# <xbar.desc>Record meetings with OBS and transcribe with WhisperX + ChatGPT analysis.</xbar.desc>
-# <xbar.dependencies>python,obs-cmd,whisperx,openai</xbar.dependencies>
+# <xbar.desc>Record meetings with OBS and transcribe with WhisperX + LLM analysis (OpenAI or Anthropic).</xbar.desc>
+# <xbar.dependencies>python,obs-cmd,whisperx</xbar.dependencies>
 # <xbar.refreshTime>1s</xbar.refreshTime>
 
 """
@@ -12,7 +12,7 @@ SwiftBar Plugin for WhisperX Recording
 
 Shows recording status in menu bar with controls to start/stop recording.
 Includes:
-- Call type selection with customized ChatGPT prompts
+- Call type selection with customized LLM prompts
 - Diarization toggle for low-bandwidth situations
 - Processing queue status
 """
@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 
 # Path to the backend script
-SCRIPT_DIR = Path(__file__).parent.parent / "processing-pipeline"
+SCRIPT_DIR = Path(__file__).resolve().parent.parent / "processing-pipeline"
 RECORDER_SCRIPT = SCRIPT_DIR / "whisperx_recorder.py"
 STATE_FILE = Path.home() / ".config/whisperx/recording_state.json"
 PROCESSING_STATE_FILE = Path.home() / ".config/whisperx/processing_state.json"
@@ -85,11 +85,11 @@ def load_processing_jobs() -> list:
 def load_settings() -> dict:
     """Load settings with cascading priority: defaults -> user overrides."""
     config = {
-        'transcription': {'diarize': True},
-        'openai': {'enabled': False},
+        'transcription': {'diarize': False},
+        'llm': {'enabled': False, 'auto_analyze': False},
         'call_types': {}
     }  # Fallback
-    
+
     # Load project defaults
     if DEFAULT_CONFIG_FILE.exists():
         try:
@@ -97,13 +97,13 @@ def load_settings() -> dict:
                 project_config = json.load(f)
                 if 'transcription' in project_config:
                     config['transcription'].update(project_config['transcription'])
-                if 'openai' in project_config:
-                    config['openai'].update(project_config['openai'])
+                if 'llm' in project_config:
+                    config['llm'].update(project_config['llm'])
                 if 'call_types' in project_config:
                     config['call_types'] = project_config['call_types']
         except:
             pass
-    
+
     # Load user overrides
     if USER_SETTINGS_FILE.exists():
         try:
@@ -111,21 +111,28 @@ def load_settings() -> dict:
                 user_config = json.load(f)
                 if 'transcription' in user_config:
                     config['transcription'].update(user_config['transcription'])
-                if 'openai' in user_config:
-                    config['openai'].update(user_config['openai'])
+                if 'llm' in user_config:
+                    config['llm'].update(user_config['llm'])
         except:
             pass
-    
+
     return config
 
 
-def is_openai_enabled(settings: dict) -> bool:
-    """Check if OpenAI integration is enabled."""
-    openai_config = settings.get('openai', {})
-    return (
-        openai_config.get('enabled', False) and
-        bool(openai_config.get('api_key'))
-    )
+def is_llm_configured(settings: dict) -> bool:
+    """Check if LLM analysis is enabled and has the credential its provider needs."""
+    llm_config = settings.get('llm', {})
+    if not llm_config.get('enabled', False):
+        return False
+    provider = llm_config.get('provider', 'openai')
+    if provider == 'anthropic':
+        return bool(llm_config.get('anthropic_api_key'))
+    return bool(llm_config.get('api_key'))
+
+
+def is_auto_analyze_enabled(settings: dict) -> bool:
+    """Whether analysis actually runs automatically after a recording, not just configured."""
+    return is_llm_configured(settings) and settings.get('llm', {}).get('auto_analyze', False)
 
 
 def truncate_title(title: str, max_len: int = 25) -> str:
@@ -142,10 +149,11 @@ def main():
     settings = load_settings()
     is_recording = state.get('recording', False)
     processing_count = len(processing_jobs)
-    diarize_enabled = settings.get('transcription', {}).get('diarize', True)
-    openai_enabled = is_openai_enabled(settings)
+    diarize_enabled = settings.get('transcription', {}).get('diarize', False)
+    llm_configured = is_llm_configured(settings)
+    auto_analyze_enabled = is_auto_analyze_enabled(settings)
     call_types = settings.get('call_types', {})
-    
+
     # ─── Menu Bar Title ───────────────────────────────────────────────────────
     if is_recording:
         title = state.get('title', 'Recording')
@@ -163,7 +171,7 @@ def main():
     else:
         # Show status indicators in idle state
         diarize_indicator = "•" if diarize_enabled else "○"
-        ai_indicator = "🤖" if openai_enabled else ""
+        ai_indicator = "🤖" if auto_analyze_enabled else ""
         print(f"{ICON_IDLE} Ready {diarize_indicator}{ai_indicator}")
     
     # ─── Dropdown Menu ────────────────────────────────────────────────────────
@@ -173,7 +181,7 @@ def main():
         # Recording in progress - show stop option
         title = state.get('title', 'Recording')
         started = state.get('started_at', 'Unknown')
-        rec_diarize = state.get('diarize', True)
+        rec_diarize = state.get('diarize', False)
         call_type = state.get('call_type', 'generic')
         call_type_info = call_types.get(call_type, {})
         call_type_name = call_type_info.get('name', call_type)
@@ -182,8 +190,8 @@ def main():
         print(f"Started: {started[:19]} | size=11")
         print(f"Call Type: {call_type_name} | size=11")
         print(f"Diarization: {'on' if rec_diarize else 'off'} | size=11")
-        if openai_enabled:
-            print(f"ChatGPT Analysis: enabled | size=11")
+        if auto_analyze_enabled:
+            print(f"LLM Analysis: auto-run on completion | size=11")
         
         print("---")
         print(f"⏹️ Stop Recording | bash={RECORDER_CMD} param1=stop terminal=false refresh=true")
@@ -195,7 +203,7 @@ def main():
             for job in processing_jobs:
                 proc_title = job.get('title', 'Unknown')
                 proc_started = job.get('started_at', 'Unknown')[:19]
-                proc_diarize = job.get('diarize', True)
+                proc_diarize = job.get('diarize', False)
                 proc_call_type = job.get('call_type_name', 'Recording')
                 diarize_icon = "🎤" if proc_diarize else "📝"
                 print(f"--{diarize_icon} {proc_title} | size=12")
@@ -210,10 +218,12 @@ def main():
         print(f"--Turn On | bash={RECORDER_CMD} param1=config param2=diarize param3=on terminal=false refresh=true")
         print(f"--Turn Off (faster, offline) | bash={RECORDER_CMD} param1=config param2=diarize param3=off terminal=false refresh=true")
         
-        if openai_enabled:
-            print(f"🤖 ChatGPT Analysis: Enabled | color=green")
+        if auto_analyze_enabled:
+            print(f"🤖 LLM Analysis: auto-run on | color=green")
+        elif llm_configured:
+            print(f"🤖 LLM Analysis: configured, auto-run off | color=gray")
         else:
-            print(f"🤖 ChatGPT Analysis: Disabled | color=gray")
+            print(f"🤖 LLM Analysis: not configured | color=gray")
         
         print("---")
         
@@ -255,7 +265,7 @@ def main():
     print(f"--Open Config Folder | bash=open param1={Path.home() / '.config/whisperx'} terminal=false")
     print(f"--Open Recordings Folder | bash=open param1={Path.home() / 'OBSRecordings'} terminal=false")
     print("---")
-    ai_status = " + ChatGPT" if openai_enabled else ""
+    ai_status = " + LLM auto-analyze" if auto_analyze_enabled else ""
     print(f"WhisperX Recorder v3.0{ai_status} | size=10 color=gray")
 
 

@@ -1,4 +1,4 @@
-#!/Users/smitty.weygant/anaconda3/envs/whisperx-recorder/bin/python
+#!/usr/bin/env python3
 """
 WhisperX Recording Controller
 
@@ -7,13 +7,14 @@ This script handles:
 - Meeting title input and file organization
 - Metadata generation
 - Audio extraction and WhisperX transcription
-- OpenAI ChatGPT analysis of transcripts
+- LLM-based analysis (OpenAI or Anthropic) of transcripts
 
 Configuration:
 - Defaults: processing-pipeline/config.default.json (version controlled)
 - User overrides: ~/.config/whisperx/settings.json (personal settings)
 """
 
+import functools
 import io
 import json
 import logging
@@ -93,6 +94,24 @@ def expand_path(path_str: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(path_str)))
 
 
+def resolve_secret(value: str) -> str:
+    """Resolve a config value that may be an op:// 1Password reference. Non-op:// values pass through unchanged."""
+    if not value or not value.startswith('op://'):
+        return value
+    return _resolve_op_reference(value)
+
+
+@functools.lru_cache(maxsize=None)
+def _resolve_op_reference(op_uri: str) -> str:
+    result = subprocess.run(['op', 'read', op_uri], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to resolve secret from 1Password ({op_uri}): {result.stderr.strip()}\n"
+            f"Make sure the 1Password CLI is installed and you're signed in (op signin)."
+        )
+    return result.stdout.strip()
+
+
 def load_config() -> dict:
     """
     Load configuration with cascading priority:
@@ -105,10 +124,11 @@ def load_config() -> dict:
         "recording": {
             "output_dir": "~/OBSRecordings",
             "obs_ws_port": "4455",
-            "obs_ws_password": ""
+            "obs_ws_password": "",
+            "keep_video": False
         },
         "transcription": {
-            "diarize": True,
+            "diarize": False,
             "language": "en",
             "device": "cpu",
             "compute_type": "float32",
@@ -186,77 +206,44 @@ HF_TOKEN = _config['transcription']['hf_token']
 
 def get_diarize_setting() -> bool:
     """Get current diarization setting."""
-    return _config['transcription'].get('diarize', True)
+    return _config['transcription'].get('diarize', False)
+
+
+def get_keep_video_setting() -> bool:
+    """Get current keep-video setting (preserve source video after processing)."""
+    return _config['recording'].get('keep_video', False)
 
 
 # ─── OpenAI Config Accessors ──────────────────────────────────────────────────
 
-def get_openai_config() -> dict:
-    """Get OpenAI configuration."""
-    return _config.get('openai', {})
+def get_llm_config() -> dict:
+    """Get LLM analysis configuration."""
+    return _config.get('llm', {})
 
 
-def get_openai_provider() -> str:
-    """Get configured OpenAI provider ('openai' or 'databricks')."""
-    return get_openai_config().get('provider', 'openai')
+def get_llm_provider() -> str:
+    """Get configured LLM provider ('openai' or 'anthropic')."""
+    return get_llm_config().get('provider', 'openai')
 
 
-def is_openai_enabled() -> bool:
-    """Check if OpenAI integration is enabled and properly configured."""
-    openai_config = get_openai_config()
-    if not openai_config.get('enabled', False):
+def is_llm_enabled() -> bool:
+    """Check if LLM analysis is enabled and properly configured."""
+    llm_config = get_llm_config()
+    if not llm_config.get('enabled', False):
         return False
-    
-    provider = openai_config.get('provider', 'openai')
-    if provider == 'databricks':
-        # Databricks requires a profile (token fetched at runtime)
-        return bool(openai_config.get('databricks_profile'))
+
+    provider = llm_config.get('provider', 'openai')
+    if provider == 'anthropic':
+        return bool(llm_config.get('anthropic_api_key'))
     else:
-        # Direct OpenAI requires an API key
-        return bool(openai_config.get('api_key'))
+        return bool(llm_config.get('api_key'))
 
 
-def get_databricks_openai_client(profile: str):
-    """
-    Create OpenAI client configured for Databricks model serving.
-    Uses Databricks SDK to fetch OAuth token from configured profile.
-    
-    Args:
-        profile: Databricks CLI profile name (from ~/.databrickscfg)
-    
-    Returns:
-        tuple: (openai.OpenAI client, host) on success, or (None, error_message) on failure
-    """
-    try:
-        from databricks.sdk import WorkspaceClient
-        import openai
-        
-        logger.debug(f"Connecting to Databricks with profile: {profile}")
-        w = WorkspaceClient(profile=profile)
-        
-        # Get OAuth token and host from SDK
-        token = w.config.oauth_token()
-        host = w.config.host
-        
-        logger.debug(f"Databricks host: {host}")
-        logger.debug(f"Token obtained: {bool(token)}")
-        
-        # Create OpenAI client with Databricks endpoint
-        client = openai.OpenAI(
-            api_key=token.access_token,
-            base_url=f"{host}/serving-endpoints"
-        )
-        
-        logger.info(f"Databricks OpenAI client created for {host}")
-        return client, host
-        
-    except ImportError as e:
-        logger.error(f"Databricks SDK not installed: {e}")
-        return None, "databricks-sdk not installed. Run: pip install databricks-sdk"
-    except Exception as e:
-        logger.error(f"Databricks connection failed: {e}")
-        logger.error(traceback.format_exc())
-        return None, str(e)
+def should_auto_analyze() -> bool:
+    """Whether LLM analysis should run automatically after transcription (start/stop, process).
+    The transcript is the primary deliverable by default; analysis is opt-in via this setting
+    or run on demand later with the `analyze` command, independent of this flag."""
+    return is_llm_enabled() and get_llm_config().get('auto_analyze', False)
 
 
 def get_call_types() -> dict:
@@ -298,21 +285,28 @@ def get_gdrive_service():
         
         gdrive_config = get_gdrive_config()
         sa_file = gdrive_config.get('service_account_file', '')
-        
-        # Look for service account file in project directory
-        sa_path = SCRIPT_DIR.parent / sa_file
-        if not sa_path.exists():
-            # Also check in processing-pipeline directory
-            sa_path = SCRIPT_DIR / sa_file
-        
-        if not sa_path.exists():
-            return None, f"Service account file not found: {sa_file}"
-        
         scopes = ['https://www.googleapis.com/auth/drive']
-        credentials = service_account.Credentials.from_service_account_file(
-            str(sa_path),
-            scopes=scopes
-        )
+
+        if sa_file.startswith('op://'):
+            sa_info = json.loads(resolve_secret(sa_file))
+            credentials = service_account.Credentials.from_service_account_info(
+                sa_info,
+                scopes=scopes
+            )
+        else:
+            # Look for service account file in project directory
+            sa_path = SCRIPT_DIR.parent / sa_file
+            if not sa_path.exists():
+                # Also check in processing-pipeline directory
+                sa_path = SCRIPT_DIR / sa_file
+
+            if not sa_path.exists():
+                return None, f"Service account file not found: {sa_file}"
+
+            credentials = service_account.Credentials.from_service_account_file(
+                str(sa_path),
+                scopes=scopes
+            )
         
         service = build('drive', 'v3', credentials=credentials)
         logger.info("Google Drive service created successfully")
@@ -336,32 +330,33 @@ def get_or_create_gdrive_folder(service, folder_name: str, parent_id: str = None
     Args:
         service: Google Drive service
         folder_name: Name of the folder
-        parent_id: Parent folder/drive ID (defaults to configured shared_drive_id)
-    
+        parent_id: Parent folder ID (defaults to configured parent_folder_id). Works for a
+            regular Drive folder shared with the service account, or a Shared Drive's ID.
+
     Returns:
         Folder ID or None if failed
     """
     global _gdrive_folder_cache
-    
+
     gdrive_config = get_gdrive_config()
     if parent_id is None:
-        parent_id = gdrive_config.get('shared_drive_id', '')
-    
+        parent_id = gdrive_config.get('parent_folder_id', '')
+
     cache_key = f"{parent_id}:{folder_name}"
     if cache_key in _gdrive_folder_cache:
         return _gdrive_folder_cache[cache_key]
-    
+
     try:
-        # Search for existing folder
+        # Search for existing folder. Deliberately omits corpora='drive'/driveId, which
+        # restrict the search to a Shared Drive - parent_id is usually just a regular
+        # folder shared with the service account, and 'in parents' scopes correctly either way.
         query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and '{parent_id}' in parents and trashed = false"
         results = service.files().list(
             q=query,
             spaces='drive',
             fields='files(id, name)',
             supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
-            corpora='drive',
-            driveId=parent_id
+            includeItemsFromAllDrives=True
         ).execute()
         
         files = results.get('files', [])
@@ -467,10 +462,10 @@ def upload_to_gdrive(
         from googleapiclient.http import MediaIoBaseUpload
         
         gdrive_config = get_gdrive_config()
-        shared_drive_id = gdrive_config.get('shared_drive_id', '')
-        
+        parent_folder_id = gdrive_config.get('parent_folder_id', '')
+
         # Get or create folder for this call type
-        folder_id = get_or_create_gdrive_folder(service, call_type_name, shared_drive_id)
+        folder_id = get_or_create_gdrive_folder(service, call_type_name, parent_folder_id)
         if not folder_id:
             logger.error(f"Could not get/create folder for: {call_type_name}")
             return None
@@ -674,7 +669,7 @@ def notify(title: str, message: str):
 def get_obs_cmd_args():
     """Build obs-cmd connection arguments."""
     if OBS_WS_PASSWORD:
-        return f"--websocket obsws://127.0.0.1:{OBS_WS_PORT}/{OBS_WS_PASSWORD}"
+        return f"--websocket obsws://127.0.0.1:{OBS_WS_PORT}/{resolve_secret(OBS_WS_PASSWORD)}"
     return f"-w ws://127.0.0.1:{OBS_WS_PORT}"
 
 
@@ -1174,7 +1169,11 @@ def run_whisperx(audio_file: str, output_dir: str, diarize: bool = None):
     print()
     
     os.environ['TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD'] = '1'
-    
+    # Multiple native libs (torch, ctranslate2, scipy) each bundle their own OpenMP runtime on
+    # Intel macOS; without these, concurrent init reliably segfaults or deadlocks mid-transcription.
+    os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+    os.environ['OMP_NUM_THREADS'] = '1'
+
     cmd = [
         str(WHISPERX_PATH), audio_file,
         '--language', 'en',
@@ -1184,12 +1183,12 @@ def run_whisperx(audio_file: str, output_dir: str, diarize: bool = None):
     ]
     
     if diarize:
-        cmd.extend(['--diarize', '--hf_token', HF_TOKEN])
+        cmd.extend(['--diarize', '--hf_token', resolve_secret(HF_TOKEN)])
     
     subprocess.run(cmd)
 
 
-# ─── OpenAI ChatGPT Analysis ─────────────────────────────────────────────────
+# ─── LLM Analysis ─────────────────────────────────────────────────
 
 def load_transcript(transcript_dir: str) -> Optional[str]:
     """
@@ -1244,7 +1243,7 @@ def load_transcript(transcript_dir: str) -> Optional[str]:
     return None
 
 
-def analyze_with_chatgpt(
+def analyze_with_llm(
     transcript: str,
     call_type_id: str,
     person_name: Optional[str] = None,
@@ -1252,32 +1251,30 @@ def analyze_with_chatgpt(
     title: str = None
 ) -> Optional[str]:
     """
-    Send transcript to ChatGPT for analysis.
-    
+    Send transcript to the configured LLM provider (OpenAI or Anthropic) for analysis.
+
     Args:
         transcript: The transcript text to analyze
         call_type_id: ID of the call type (e.g., 'team_meeting', 'one_on_one')
         person_name: For 1:1s, the person's name to include in prompt
         output_dir: Directory to save the analysis output
         title: Recording title for context
-    
+
     Returns:
         The analysis text, or None if failed
     """
-    logger.info(f"Starting ChatGPT analysis for: {title}")
+    logger.info(f"Starting LLM analysis for: {title}")
     logger.debug(f"Call type: {call_type_id}, Person: {person_name}")
-    
-    if not is_openai_enabled():
-        logger.warning("OpenAI not configured - skipping analysis")
-        print("⚠️  OpenAI not configured - skipping analysis")
+
+    if not is_llm_enabled():
+        logger.warning("LLM analysis not configured - skipping analysis")
+        print("⚠️  LLM analysis not configured - skipping analysis")
         return None
-    
-    openai_config = get_openai_config()
+
+    llm_config = get_llm_config()
     call_type = get_call_type(call_type_id)
-    
-    logger.debug(f"OpenAI config: model={openai_config.get('model')}, enabled={openai_config.get('enabled')}")
-    logger.debug(f"API key present: {bool(openai_config.get('api_key'))}")
-    logger.debug(f"API key length: {len(openai_config.get('api_key', ''))}")
+
+    logger.debug(f"LLM config: provider={llm_config.get('provider')}, enabled={llm_config.get('enabled')}")
     
     # Load context files if specified
     context = ""
@@ -1335,71 +1332,68 @@ def analyze_with_chatgpt(
     user_message = f"## Meeting: {title}\n\n## Transcript:\n\n{transcript}"
     
     # Determine provider and model
-    provider = openai_config.get('provider', 'openai')
-    if provider == 'databricks':
-        model = openai_config.get('databricks_model', 'databricks-gpt-5-2')
+    provider = llm_config.get('provider', 'openai')
+    if provider == 'anthropic':
+        model = llm_config.get('anthropic_model', 'claude-sonnet-5')
     else:
-        model = openai_config.get('model', 'gpt-4o')
-    
-    logger.info(f"Sending to ChatGPT: provider={provider}, model={model}, transcript_len={len(transcript)}")
-    print("🤖 Analyzing transcript with ChatGPT...")
-    print(f"   Provider: {provider}")
+        model = llm_config.get('model', 'gpt-4o')
+
+    logger.info(f"Sending to LLM: provider={provider}, model={model}, transcript_len={len(transcript)}")
+    print(f"🤖 Analyzing transcript with {provider}...")
     print(f"   Model: {model}")
     print(f"   Call type: {call_type.get('name', call_type_id)}")
     if person_name:
         print(f"   Person: {person_name}")
     print()
-    
+
     try:
-        import openai
-        logger.debug(f"OpenAI library version: {openai.__version__}")
-        
-        # Create client based on provider
-        if provider == 'databricks':
-            profile = openai_config.get('databricks_profile')
-            if not profile:
-                logger.error("Databricks profile not configured")
-                print("❌ Databricks profile not configured in openai.databricks_profile", file=sys.stderr)
+        if provider == 'anthropic':
+            import anthropic
+            logger.debug("Creating Anthropic client...")
+            client = anthropic.Anthropic(api_key=resolve_secret(llm_config['anthropic_api_key']))
+
+            logger.info("Calling Anthropic API...")
+            response = client.messages.create(
+                model=model,
+                max_tokens=4000,
+                system=system_message,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            logger.info("Anthropic API call successful")
+
+            analysis = next((b.text for b in response.content if b.type == "text"), None)
+            if analysis is None:
+                logger.error(f"Anthropic returned no text content (stop_reason={response.stop_reason})")
+                print(f"❌ Anthropic returned no text (stop_reason: {response.stop_reason})", file=sys.stderr)
                 return None
-            
-            client, host_or_error = get_databricks_openai_client(profile)
-            if not client:
-                logger.error(f"Databricks connection failed: {host_or_error}")
-                print(f"❌ Databricks auth failed: {host_or_error}", file=sys.stderr)
-                print(f"   Run: databricks auth login --profile {profile}", file=sys.stderr)
-                return None
-            
-            logger.info(f"Using Databricks: {host_or_error}")
         else:
-            # Direct OpenAI
+            import openai
+            logger.debug(f"OpenAI library version: {openai.__version__}")
             logger.debug("Creating direct OpenAI client...")
-            client = openai.OpenAI(api_key=openai_config['api_key'])
-            logger.info("Using direct OpenAI API")
-        
-        logger.info("Calling ChatGPT API...")
-        
-        # Build API parameters
-        api_params = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            "temperature": 0.3,  # Lower temperature for more consistent analysis
-        }
-        
-        # Use max_completion_tokens for newer models (o1, gpt-5, etc.)
-        # Databricks models typically use max_tokens
-        if provider == 'openai' and model.startswith(('o1', 'gpt-5', 'gpt-4o-')):
-            api_params["max_completion_tokens"] = 4000
-        else:
-            api_params["max_tokens"] = 4000
-        
-        response = client.chat.completions.create(**api_params)
-        logger.info("ChatGPT API call successful")
-        
-        analysis = response.choices[0].message.content
-        logger.info(f"ChatGPT response received: {len(analysis)} chars")
+            client = openai.OpenAI(api_key=resolve_secret(llm_config['api_key']))
+
+            api_params = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": user_message}
+                ],
+                "temperature": 0.3,  # Lower temperature for more consistent analysis
+            }
+
+            # Use max_completion_tokens for newer models (o1, gpt-5, etc.)
+            if model.startswith(('o1', 'gpt-5', 'gpt-4o-')):
+                api_params["max_completion_tokens"] = 4000
+            else:
+                api_params["max_tokens"] = 4000
+
+            logger.info("Calling OpenAI API...")
+            response = client.chat.completions.create(**api_params)
+            logger.info("OpenAI API call successful")
+
+            analysis = response.choices[0].message.content
+
+        logger.info(f"LLM response received: {len(analysis)} chars")
         logger.debug(f"Response preview: {analysis[:200]}...")
         
         # Save analysis to file with timestamp and model name for comparison
@@ -1451,14 +1445,15 @@ def analyze_with_chatgpt(
         return analysis
         
     except ImportError as e:
-        logger.error(f"OpenAI package not installed: {e}")
+        logger.error(f"LLM package not installed: {e}")
         logger.error(traceback.format_exc())
-        print("❌ OpenAI package not installed. Run: pip install openai", file=sys.stderr)
+        pkg = "anthropic" if provider == 'anthropic' else "openai"
+        print(f"❌ {pkg} package not installed. Run: pip install {pkg}", file=sys.stderr)
         return None
     except Exception as e:
-        logger.error(f"ChatGPT analysis failed: {e}")
+        logger.error(f"LLM analysis failed: {e}")
         logger.error(traceback.format_exc())
-        print(f"❌ ChatGPT analysis failed: {e}", file=sys.stderr)
+        print(f"❌ LLM analysis failed: {e}", file=sys.stderr)
         return None
 
 
@@ -1467,24 +1462,27 @@ def analyze_with_chatgpt(
 def process_existing_video(
     video_path: str,
     title: str = None,
-    keep_video: bool = False,
+    keep_video: bool = None,
     diarize: bool = None,
     call_type: str = None,
     person_name: str = None
 ):
     """
     Process an existing video file - extract audio, transcribe, and analyze.
-    
+
     Args:
         video_path: Path to the video file
         title: Optional title for the recording (derived from filename if not provided)
-        keep_video: If True, don't delete the original video after processing
+        keep_video: If True, don't delete the original video after processing (default: use saved setting)
         diarize: Enable speaker diarization (default: use saved setting)
-        call_type: Call type ID for ChatGPT analysis
+        call_type: Call type ID for LLM analysis
         person_name: Person name for 1:1 meetings
     """
+    if keep_video is None:
+        keep_video = get_keep_video_setting()
+
     video_file = Path(video_path).resolve()
-    
+
     if not video_file.exists():
         print(f"ERROR: Video file not found: {video_file}", file=sys.stderr)
         return False
@@ -1573,26 +1571,29 @@ def process_existing_video(
     print()
     run_whisperx(audio_file, paths['transcript_dir'], diarize=diarize)
     
-    # Run ChatGPT analysis if enabled
-    if is_openai_enabled():
+    # Run LLM analysis if auto-analyze is enabled (transcript is the default deliverable;
+    # run `analyze <folder>` manually otherwise)
+    if should_auto_analyze():
         print()
         transcript = load_transcript(paths['transcript_dir'])
         if transcript:
-            analyze_with_chatgpt(
+            analyze_with_llm(
                 transcript=transcript,
                 call_type_id=call_type,
                 person_name=person_name,
                 output_dir=paths['output_dir'],
                 title=title
             )
-    
+
     print()
     print("=" * 60)
     print(f"✅ Processing complete!")
     print(f"📁 Output directory: {paths['output_dir']}")
     print(f"📝 Transcript: {paths['transcript_dir']}")
-    if is_openai_enabled():
-        print(f"🤖 Analysis: {paths['output_dir']}/chatgpt_analysis.md")
+    if should_auto_analyze():
+        print(f"🤖 Analysis: {paths['output_dir']}/analysis_*.md")
+    elif is_llm_enabled():
+        print(f"💡 Run analysis manually: whisperx-recorder analyze {paths['output_dir']}")
     print("=" * 60)
     return True
 
@@ -1623,7 +1624,7 @@ def get_status() -> dict:
 def run_background_processing(bg_state_json: str):
     """
     Internal function called by background process to do actual transcription
-    and ChatGPT analysis.
+    and LLM analysis.
     This runs in a separate process spawned by end_recording.
     """
     # Re-initialize logging for background process
@@ -1685,8 +1686,11 @@ def run_background_processing(bg_state_json: str):
         # Verify and delete video
         if os.path.exists(audio_file) and os.path.getsize(audio_file) > 0:
             logger.info(f"Audio extraction successful, size: {os.path.getsize(audio_file)} bytes")
-            video_file.unlink()
-            logger.debug("Video file deleted")
+            if not get_keep_video_setting():
+                video_file.unlink()
+                logger.debug("Video file deleted")
+            else:
+                logger.info("keep_video enabled - preserving source video")
         else:
             logger.error(f"Audio extraction failed - file missing or empty")
             notify("Processing Error", f"Audio extraction failed for: {title}")
@@ -1697,16 +1701,16 @@ def run_background_processing(bg_state_json: str):
         run_whisperx(audio_file, paths['transcript_dir'], diarize=diarize)
         logger.info("WhisperX transcription complete")
         
-        # Run ChatGPT analysis if enabled
-        logger.info(f"Checking OpenAI status: enabled={is_openai_enabled()}")
-        if is_openai_enabled():
-            logger.info("OpenAI is enabled, loading transcript...")
+        # Run LLM analysis if auto-analyze is enabled (transcript is the default deliverable)
+        logger.info(f"Checking auto-analyze status: {should_auto_analyze()}")
+        if should_auto_analyze():
+            logger.info("Auto-analyze enabled, loading transcript...")
             transcript = load_transcript(paths['transcript_dir'])
             if transcript:
                 logger.info(f"Transcript loaded: {len(transcript)} chars")
                 logger.debug(f"Transcript preview: {transcript[:200]}...")
                 
-                analysis = analyze_with_chatgpt(
+                analysis = analyze_with_llm(
                     transcript=transcript,
                     call_type_id=call_type,
                     person_name=person_name,
@@ -1715,16 +1719,16 @@ def run_background_processing(bg_state_json: str):
                 )
                 
                 if analysis:
-                    logger.info("ChatGPT analysis completed successfully")
+                    logger.info("LLM analysis completed successfully")
                     notify("Analysis Complete", f"Finished: {title}")
                 else:
-                    logger.warning("ChatGPT analysis returned None")
+                    logger.warning("LLM analysis returned None")
                     notify("Transcription Complete", f"Finished: {title} (analysis failed)")
             else:
                 logger.warning("No transcript found for analysis")
                 notify("Transcription Complete", f"Finished: {title} (no transcript for analysis)")
         else:
-            logger.info("OpenAI not enabled, skipping analysis")
+            logger.info("Auto-analyze not enabled, skipping analysis")
             # Success notification
             notify("Transcription Complete", f"Finished: {title}")
         
@@ -1759,6 +1763,10 @@ def parse_args(args: list) -> tuple:
             flags['diarize'] = False
         elif arg == '--diarize':
             flags['diarize'] = True
+        elif arg == '--keep-video':
+            flags['keep_video'] = True
+        elif arg == '--delete-video':
+            flags['keep_video'] = False
         elif arg == '--call-type' and i + 1 < len(args):
             flags['call_type'] = args[i + 1]
             i += 1
@@ -1769,6 +1777,11 @@ def parse_args(args: list) -> tuple:
             flags['call_type'] = arg.split('=', 1)[1]
         elif arg.startswith('--person='):
             flags['person_name'] = arg.split('=', 1)[1]
+        elif arg == '--days' and i + 1 < len(args):
+            flags['days'] = args[i + 1]
+            i += 1
+        elif arg.startswith('--days='):
+            flags['days'] = arg.split('=', 1)[1]
         else:
             remaining.append(arg)
         i += 1
@@ -1780,7 +1793,7 @@ def main():
     """Main CLI entry point."""
     if len(sys.argv) < 2:
         diarize_status = "enabled" if get_diarize_setting() else "disabled"
-        openai_status = "enabled" if is_openai_enabled() else "disabled"
+        llm_status = "configured, auto-run " + ("on" if should_auto_analyze() else "off") if is_llm_enabled() else "not configured"
         
         print("Usage: whisperx_recorder.py <command> [args] [flags]")
         print()
@@ -1788,7 +1801,8 @@ def main():
         print("  start [title]           - Start recording (prompts if not provided)")
         print("  stop                    - Stop recording and transcribe")
         print("  process <video> [title] - Process existing video file")
-        print("  analyze <folder>        - Run ChatGPT analysis on existing transcript")
+        print("  analyze <folder>        - Run LLM analysis on existing transcript")
+        print("  gdrive-upload [folder]  - Upload analysis files to Google Drive")
         print("  config diarize <on|off> - Set default diarization preference")
         print("  types                   - List available call types")
         print("  status                  - Get current status (JSON output)")
@@ -1798,11 +1812,14 @@ def main():
         print("Flags:")
         print("  --no-diarize            - Skip speaker diarization (faster, offline)")
         print("  --diarize               - Enable speaker diarization")
+        print("  --keep-video            - Preserve the source video after processing (process command)")
+        print("  --delete-video          - Delete the source video after processing (process command)")
         print("  --call-type <type>      - Specify call type (e.g., team_meeting)")
         print("  --person <name>         - Person name (for 1:1 meetings)")
+        print("  --days <N>              - Days to look back for gdrive-upload (default: 3)")
         print()
         print(f"Current diarization default: {diarize_status}")
-        print(f"OpenAI analysis: {openai_status}")
+        print(f"LLM analysis: {llm_status}")
         print(f"Log file: {LOG_FILE}")
         print()
         print("Examples:")
@@ -1859,16 +1876,18 @@ def main():
         if len(args) < 2:
             print("ERROR: Video file path required", file=sys.stderr)
             print("Usage: whisperx_recorder.py process <video_path> [title] [flags]", file=sys.stderr)
-            print("Flags: --call-type <type>, --person <name>, --no-diarize", file=sys.stderr)
+            print("Flags: --call-type <type>, --person <name>, --no-diarize, --keep-video/--delete-video", file=sys.stderr)
             sys.exit(1)
-        
+
         video_path = args[1]
         title = ' '.join(args[2:]) if len(args) > 2 else None
         diarize = flags.get('diarize', get_diarize_setting())
+        keep_video = flags.get('keep_video', get_keep_video_setting())
         call_type = flags.get('call_type')
         person_name = flags.get('person_name')
         success = process_existing_video(
             video_path, title,
+            keep_video=keep_video,
             diarize=diarize,
             call_type=call_type,
             person_name=person_name
@@ -1898,7 +1917,7 @@ def main():
     elif command == 'status':
         status = get_status()
         status['diarize_default'] = get_diarize_setting()
-        status['openai_enabled'] = is_openai_enabled()
+        status['llm_enabled'] = is_llm_enabled()
         status['log_file'] = str(LOG_FILE)
         print(json.dumps(status, indent=2))
     
@@ -1929,7 +1948,7 @@ def main():
             print("No logs to clear")
     
     elif command == 'analyze':
-        # Manually run ChatGPT analysis on existing transcript
+        # Manually run LLM analysis on existing transcript
         if len(args) < 2:
             print("ERROR: Recording folder path required", file=sys.stderr)
             print("Usage: whisperx_recorder.py analyze <recording_folder> [--call-type <type>]", file=sys.stderr)
@@ -1961,7 +1980,7 @@ def main():
         person_name = flags.get('person_name')
         
         print()
-        print(f"📋 Running ChatGPT analysis on: {recording_path.name}")
+        print(f"📋 Running LLM analysis on: {recording_path.name}")
         print(f"   Title: {title}")
         print(f"   Call type: {call_type}")
         print()
@@ -1976,7 +1995,7 @@ def main():
         print()
         
         # Run analysis
-        analysis = analyze_with_chatgpt(
+        analysis = analyze_with_llm(
             transcript=transcript,
             call_type_id=call_type,
             person_name=person_name,
@@ -1992,6 +2011,111 @@ def main():
             print()
             print("❌ Analysis failed - check logs with: whisperx-recorder logs")
             sys.exit(1)
+    
+    elif command == 'gdrive-upload':
+        # Upload analysis files to Google Drive
+        if not is_gdrive_enabled():
+            print("❌ Google Drive is not enabled in configuration", file=sys.stderr)
+            print("   Set gdrive.enabled = true in config", file=sys.stderr)
+            sys.exit(1)
+        
+        # Get recording folders to process
+        recording_paths = []
+        
+        if len(args) > 1:
+            # Specific path(s) provided
+            for arg in args[1:]:
+                if arg.startswith('--'):
+                    continue
+                path = Path(arg).expanduser().resolve()
+                if path.is_dir():
+                    recording_paths.append(path)
+                else:
+                    print(f"⚠️  Skipping (not a directory): {arg}", file=sys.stderr)
+        else:
+            # Find recent recordings with analysis files
+            output_dir = OBS_RECORD_DIR
+            days = int(flags.get('days', 3))
+            print(f"📁 Scanning {output_dir} for analyses from the past {days} days...")
+            
+            from datetime import timedelta
+            cutoff = datetime.now() - timedelta(days=days)
+            
+            for folder in output_dir.iterdir():
+                if not folder.is_dir():
+                    continue
+                # Check for analysis files
+                analysis_files = list(folder.glob('analysis_*.md'))
+                if analysis_files:
+                    # Check modification time
+                    latest = max(f.stat().st_mtime for f in analysis_files)
+                    if datetime.fromtimestamp(latest) > cutoff:
+                        recording_paths.append(folder)
+        
+        if not recording_paths:
+            print("No recordings with analyses found")
+            sys.exit(0)
+        
+        print(f"\n📤 Found {len(recording_paths)} recording(s) to check\n")
+        
+        uploaded = 0
+        skipped = 0
+        failed = 0
+        
+        for recording_path in sorted(recording_paths):
+            # Find analysis files
+            analysis_files = list(recording_path.glob('analysis_*.md'))
+            if not analysis_files:
+                continue
+            
+            # Load metadata
+            metadata_files = list(recording_path.glob('*_metadata.json'))
+            if not metadata_files:
+                print(f"⚠️  No metadata in {recording_path.name}, skipping")
+                skipped += 1
+                continue
+            
+            with open(metadata_files[0], 'r') as f:
+                metadata = json.load(f)
+            
+            call_type_name = metadata.get('call_type_name', 'Recording')
+            person_name = metadata.get('person_name')
+            meeting_title = metadata.get('meeting_title', recording_path.name)
+            
+            # Use person_name as title for 1:1s, otherwise meeting_title
+            title = person_name if person_name else meeting_title
+            
+            for analysis_file in analysis_files:
+                # Extract date from filename: analysis_YYYY-MM-DD_HHMMSS_model.md
+                filename = analysis_file.name
+                try:
+                    date_part = filename.split('_')[1]  # YYYY-MM-DD
+                    time_part = filename.split('_')[2]  # HHMMSS
+                    analyzed_date = datetime.strptime(f"{date_part}_{time_part}", "%Y-%m-%d_%H%M%S")
+                except (IndexError, ValueError):
+                    analyzed_date = datetime.fromtimestamp(analysis_file.stat().st_mtime)
+                
+                print(f"📄 {recording_path.name}/{analysis_file.name}")
+                print(f"   Call type: {call_type_name}")
+                print(f"   Title: {title}")
+                
+                url = upload_to_gdrive(
+                    analysis_file=analysis_file,
+                    call_type_name=call_type_name,
+                    title=title,
+                    analyzed_date=analyzed_date
+                )
+                
+                if url:
+                    print(f"   ✅ {url}")
+                    uploaded += 1
+                else:
+                    print(f"   ❌ Upload failed")
+                    failed += 1
+                print()
+        
+        print(f"📊 Summary: {uploaded} uploaded, {skipped} skipped, {failed} failed")
+        sys.exit(0 if failed == 0 else 1)
     
     elif command == '_process_background':
         # Internal command - called by spawn_background_processing

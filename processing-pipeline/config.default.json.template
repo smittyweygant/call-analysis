@@ -1,15 +1,17 @@
 {
   "_comment": "WhisperX Recorder Default Configuration",
   "_docs": "Copy this file to config.default.json and fill in your values. User overrides go in ~/.config/whisperx/settings.json",
-  
+  "_secrets_docs": "Any secret-shaped value (obs_ws_password, hf_token, api_key) may be a literal string or an op://vault/item/field reference, resolved via the 1Password CLI (op read) at the point of use. Requires the op CLI installed and signed in.",
+
   "recording": {
     "output_dir": "~/OBSRecordings",
     "obs_ws_port": "4455",
-    "obs_ws_password": "YOUR_OBS_WEBSOCKET_PASSWORD"
+    "obs_ws_password": "YOUR_OBS_WEBSOCKET_PASSWORD",
+    "keep_video": false
   },
-  
+
   "transcription": {
-    "diarize": true,
+    "diarize": false,
     "language": "en",
     "device": "cpu",
     "compute_type": "float32",
@@ -21,21 +23,23 @@
     "_comment": "Google Drive integration - uploads analysis to Shared Drive as Google Docs",
     "enabled": false,
     "service_account_file": "YOUR_SERVICE_ACCOUNT_FILE.json",
-    "shared_drive_id": "YOUR_SHARED_DRIVE_ID",
-    "_docs": "Folders are auto-created per call_type name. Service account needs Content Manager access to Shared Drive."
+    "parent_folder_id": "YOUR_DRIVE_FOLDER_ID",
+    "_docs": "Folders are auto-created per call_type name under parent_folder_id. This can be a regular Drive folder with the service account granted Editor access, or a Shared Drive ID (Google Workspace only)."
   },
   
-  "openai": {
-    "_comment": "LLM provider for analysis. Supports 'openai' or 'databricks'",
+  "llm": {
+    "_comment": "LLM provider for analysis. Supports 'openai' or 'anthropic'",
     "provider": "openai",
     "enabled": true,
-    
+    "_auto_analyze_docs": "If false, analysis doesn't run automatically after start/stop or process - use the 'analyze' command on demand instead. The transcript is the default deliverable.",
+    "auto_analyze": false,
+
     "api_key": "YOUR_OPENAI_API_KEY",
     "model": "gpt-4o",
-    
-    "_databricks_docs": "For Databricks, set provider to 'databricks' and configure profile from ~/.databrickscfg",
-    "databricks_profile": "YOUR_DATABRICKS_PROFILE",
-    "databricks_model": "databricks-model-name"
+
+    "_anthropic_docs": "For Anthropic, set provider to 'anthropic'",
+    "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY",
+    "anthropic_model": "claude-sonnet-5"
   },
   
   "_call_types_docs": "Define custom call types below. Each type can have: name, icon, prompt (or prompt_template for dynamic prompts), requires_person_name (for 1:1s), and context_files (array of paths relative to context_base_path in user settings, or repo root if not set)",

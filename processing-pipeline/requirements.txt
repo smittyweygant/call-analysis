@@ -1,13 +1,16 @@
 # WhisperX Recording Pipeline Dependencies
 
-# OpenAI for ChatGPT analysis
+# LLM analysis providers
 openai>=1.0.0
-
-# Databricks SDK for OAuth token management (optional - for Databricks-hosted models)
-databricks-sdk>=0.20.0
+anthropic>=0.40.0
 
 # PDF support for context files
 pypdf>=4.0.0
+
+# Google Drive upload (optional - for gdrive.enabled)
+google-api-python-client>=2.0.0
+google-auth>=2.0.0
+markdown>=3.0.0
 
 # WhisperX and its dependencies should be installed separately:
 #   pip install whisperx

@@ -25,7 +25,16 @@ Install required tools via Homebrew:
 
 ```bash
 # Core tools
-brew install ffmpeg obs-cmd swiftbar
+brew install ffmpeg swiftbar
+
+# obs-cmd is NOT on Homebrew, despite some older docs suggesting `brew install obs-cmd`.
+# Download the release binary for your Mac's architecture instead:
+#   https://github.com/grigio/obs-cmd/releases
+#   - Intel:         obs-cmd-x64-macos.tar.gz
+#   - Apple Silicon: obs-cmd-arm64-macos.tar.gz
+curl -L <release-url> | tar xz
+chmod +x obs-cmd
+mv obs-cmd /usr/local/bin/   # or ~/.local/bin if that's on your PATH
 
 # OBS Studio
 brew install --cask obs
@@ -33,26 +42,34 @@ brew install --cask obs
 
 ### Python Environment
 
+Either conda or pyenv + venv works. Pick whichever you already use for other projects — there's no functional difference for this app.
+
+**conda:**
+
 ```bash
-# Create dedicated conda environment
 conda create -n whisperx-recorder python=3.10
 conda activate whisperx-recorder
-
-# Install dependencies
 cd /path/to/call-analysis
 pip install -r processing-pipeline/requirements.txt
-```
-
-### Install WhisperX
-
-WhisperX requires PyTorch. Install in your conda environment:
-
-```bash
-conda activate whisperx-recorder
 pip install whisperx
 ```
 
+**pyenv + venv:**
+
+```bash
+cd /path/to/call-analysis/processing-pipeline
+pyenv local 3.10.4   # any 3.10+; reuse an existing version if you have one
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install whisperx
+```
+
+Either way, set `transcription.whisperx_path` in your config to the resulting `whisperx` binary (e.g. `~/anaconda3/envs/whisperx-recorder/bin/whisperx` or `.../processing-pipeline/.venv/bin/whisperx`).
+
 > **Note:** WhisperX is CPU-intensive. First runs download models (~1-2GB).
+
+> **Intel Mac?** PyTorch 2.2.2 is the last version Apple published for Intel — this caps `numpy` (`<2`), which caps `scipy` (`<1.13`) and `transformers` (`4.44.x`-ish; newer `transformers` requires torch≥2.5 and silently breaks). You'll also need `matplotlib` installed explicitly (pyannote's VAD pipeline imports it but pip doesn't pull it in). If WhisperX segfaults (exit 139) or hangs mid-transcription, set `KMP_DUPLICATE_LIB_OK=TRUE` and `OMP_NUM_THREADS=1` before invoking it — multiple native libs (torch, ctranslate2, scipy) each bundle their own OpenMP runtime and collide on Intel Mac's dylib loading. This is already handled inside `run_whisperx()` in `whisperx_recorder.py`; only relevant if you're invoking WhisperX directly outside the app. See [Troubleshooting](#troubleshooting) if you hit this.
 
 ### Create Wrapper Script
 
@@ -63,23 +80,15 @@ mkdir -p ~/.local/bin
 
 cat > ~/.local/bin/whisperx-recorder << 'EOF'
 #!/bin/bash
-clear
-PYTHON="$HOME/anaconda3/envs/whisperx-recorder/bin/python"
+PYTHON="$HOME/anaconda3/envs/whisperx-recorder/bin/python"  # or .../processing-pipeline/.venv/bin/python3
 SCRIPT="/path/to/call-analysis/processing-pipeline/whisperx_recorder.py"  # UPDATE THIS PATH
-
-if [[ "$1" == "start" && -z "$2" ]]; then
-    "$PYTHON" "$SCRIPT" "$@"
-    sleep 1
-    exit 0
-else
-    exec "$PYTHON" "$SCRIPT" "$@"
-fi
+exec "$PYTHON" "$SCRIPT" "$@"
 EOF
 
 chmod +x ~/.local/bin/whisperx-recorder
 ```
 
-> **Important:** Update the `SCRIPT` path to match where you cloned the repository.
+> **Important:** Update `PYTHON` and `SCRIPT` to match your environment (step above) and where you cloned the repository. SwiftBar invokes this wrapper directly (`bash=~/.local/bin/whisperx-recorder`), so both paths need to be absolute and correct — there's no shell profile/PATH to fall back on in that context.
 
 Add to your PATH if needed:
 
@@ -98,9 +107,17 @@ source ~/.zshrc
 
 ### Configure SwiftBar
 
-1. Open SwiftBar preferences
-2. Set plugin folder to: `/path/to/call-analysis/SwiftBarPlugins`
-3. The 🎙️ icon will appear in your menu bar
+SwiftBar reads plugins from a folder you point it at. Rather than setting that folder directly to the repo (which would also pick up non-plugin files), symlink just the plugin file into SwiftBar's default folder — this keeps the plugin live-updated with any repo changes without a copy step:
+
+```bash
+mkdir -p ~/Documents/SwiftBarPlugins
+ln -s "/path/to/call-analysis/SwiftBarPlugins/whisperx_recorder.1s.py" ~/Documents/SwiftBarPlugins/
+```
+
+1. Launch SwiftBar. On first run it opens a folder picker — choose `~/Documents/SwiftBarPlugins`. If you miss the dialog or it doesn't appear, quit SwiftBar and set the preference directly instead: `defaults write com.ameba.SwiftBar PluginDirectory "$HOME/Documents/SwiftBarPlugins"`, then relaunch.
+2. The 🎙️ icon should appear in your menu bar within a few seconds.
+
+If the menu is empty or shows an error, the plugin's shebang (`#!/usr/bin/env python3`) needs to resolve to a Python 3 with no special dependencies — it only reads state/config files directly and shells out to the `whisperx-recorder` wrapper for actions, so the system Python is fine here even though the wrapper itself needs the WhisperX environment.
 
 ---
 
@@ -135,23 +152,24 @@ nano processing-pipeline/config.default.json
   },
   
   "transcription": {
-    "diarize": true,                       // Enable speaker diarization
+    "diarize": false,                      // Enable speaker diarization (opt-in; needs internet + HF token)
     "language": "en",                      // Transcription language
     "device": "cpu",                       // cpu or cuda
-    "compute_type": "float32",             // float32 or float16
+    "compute_type": "float32",             // float32 or float16 (see Troubleshooting before changing on CPU)
     "whisperx_path": "~/anaconda3/bin/whisperx",  // Path to whisperx
     "hf_token": "hf_xxx"                   // HuggingFace token for diarization
   },
   
-  "openai": {
-    "provider": "openai",                  // "openai" or "databricks"
-    "enabled": true,                       // Enable/disable ChatGPT analysis
-    
+  "llm": {
+    "enabled": true,                       // Whether an LLM provider is configured at all
+    "auto_analyze": false,                 // Whether analysis runs automatically after start/stop or process
+    "provider": "openai",                  // "openai" or "anthropic" — one active at a time
+
     "api_key": "sk-xxx",                   // OpenAI API key (when provider="openai")
     "model": "gpt-4o",                     // Model (when provider="openai")
-    
-    "databricks_profile": "my-profile",    // Databricks CLI profile (when provider="databricks")
-    "databricks_model": "databricks-gpt-5-2"  // Model (when provider="databricks")
+
+    "anthropic_api_key": "sk-ant-xxx",     // Anthropic API key (when provider="anthropic")
+    "anthropic_model": "claude-sonnet-5"   // Model (when provider="anthropic")
   },
   
   "call_types": {
@@ -160,17 +178,17 @@ nano processing-pipeline/config.default.json
 }
 ```
 
+`auto_analyze: false` means `start`/`stop` and `process` produce a transcript only — analysis doesn't fire automatically. Run it on demand with `whisperx-recorder analyze <folder> --call-type X` whenever you actually want it (independent of `auto_analyze`, as long as `enabled` is true and the active provider has a key). Set `auto_analyze: true` if you want it to run every time instead.
+
 ### LLM Provider Configuration
 
-The system supports two LLM backends for transcript analysis:
+The system supports two LLM backends for transcript analysis — pick one via `llm.provider`:
 
 #### Option 1: Direct OpenAI
 
-Use your personal OpenAI API key:
-
 ```json
 {
-  "openai": {
+  "llm": {
     "provider": "openai",
     "enabled": true,
     "api_key": "sk-proj-xxx",
@@ -179,40 +197,20 @@ Use your personal OpenAI API key:
 }
 ```
 
-#### Option 2: Databricks-Hosted Models
-
-Use Databricks model serving endpoints with OAuth authentication. This keeps transcripts within your Databricks environment for security.
-
-**Initial Setup:**
-
-```bash
-# Install Databricks SDK (if not already installed)
-pip install databricks-sdk
-
-# Configure Databricks CLI profile
-databricks auth login --profile adb-2548836972759138
-
-# Or use existing profile from ~/.databrickscfg
-```
-
-**Configuration:**
+#### Option 2: Anthropic
 
 ```json
 {
-  "openai": {
-    "provider": "databricks",
+  "llm": {
+    "provider": "anthropic",
     "enabled": true,
-    "databricks_profile": "adb-2548836972759138",
-    "databricks_model": "databricks-gpt-5-2"
+    "anthropic_api_key": "sk-ant-xxx",
+    "anthropic_model": "claude-sonnet-5"
   }
 }
 ```
 
-The Databricks SDK fetches OAuth tokens automatically from your configured profile. Tokens are refreshed as needed.
-
-**Available Databricks Models:**
-- `databricks-gpt-5-2` - GPT-5.2 hosted by Databricks
-- `databricks-meta-llama-3-3-70b-instruct` - Llama 3.3 70B
+Both fields' values can be `op://vault/item/field` references instead of literal keys — see [Secrets Management](#secrets-management).
 
 ### User Overrides
 
@@ -231,9 +229,27 @@ EOF
 
 ---
 
+### Secrets Management
+
+Any secret-shaped config value — `recording.obs_ws_password`, `transcription.hf_token`, `llm.api_key`, `llm.anthropic_api_key`, `gdrive.service_account_file` — can be either a literal string or an `op://vault/item/field` reference, resolved via the [1Password CLI](https://developer.1password.com/docs/cli/) at the point the value is actually used (not eagerly at startup, so commands like `types`/`status` that don't need secrets don't trigger 1Password prompts).
+
+```json
+{
+  "llm": {
+    "anthropic_api_key": "op://Development/Anthropic API Key/credential"
+  }
+}
+```
+
+Requires `op` installed and the 1Password desktop app signed in with CLI integration enabled (Settings → Developer). For a JSON-blob secret like a Google service-account key, minify it to one line and store it in a 1Password field rather than referencing a file path — `gdrive.service_account_file` accepts an `op://` reference the same way, resolved and parsed as JSON at connection time.
+
+**Reducing repeated Touch ID prompts:** if you're invoking the CLI interactively often (e.g. via SwiftBar's "Start Recording (interactive)", which opens a new Terminal session each time), 1Password's default **Settings → Developer → "Ask approval for each new"** set to *application and terminal session* treats every new session as an unrecognized requester. Narrowing that to *application*, and setting **"Remember key approval"** to *"Until 1Password locks"* (or a fixed interval), significantly cuts prompt frequency without storing anything in plaintext.
+
 ## Google Drive Integration
 
-Analysis files can be automatically uploaded to a Google Shared Drive as formatted Google Docs.
+Analysis files can be automatically uploaded to Google Drive as formatted Google Docs, into either a Google Workspace **Shared Drive** or a regular **folder** shared with the service account.
+
+> **If you don't have Google Workspace:** a Shared Drive isn't available to you — a personal Gmail account can't create one, and there's no other interface or API workaround. Use a regular Drive folder instead (Setup below covers this). Be aware a bare service account with no Workspace backing has **zero Drive storage quota of its own**, so uploads can fail with `storageQuotaExceeded` even into a folder it's been granted Editor access to — the file is still attributed to the service account for quota purposes regardless of the target folder. If you hit this, the real fix is switching the auth flow from a service-account key to an OAuth user-consent flow (so uploads are owned by your own account and quota), which this app doesn't implement yet.
 
 ### Setup
 
@@ -243,13 +259,13 @@ Analysis files can be automatically uploaded to a Google Shared Drive as formatt
 - Create a new project or use an existing one
 - Enable the Google Drive API
 - Create a Service Account and download the JSON key file
-- Place the JSON file in your `call-analysis` directory
+- Store it in 1Password rather than leaving the raw key file on disk (see [Secrets Management](#secrets-management)) — minify the JSON to one line and reference it via `gdrive.service_account_file: "op://vault/item/field"`
 
-**2. Create a Shared Drive:**
+**2. Share a destination with the service account:**
 
-- In Google Drive, create a new Shared Drive
-- Add the service account email (from the JSON file) as a "Content Manager"
-- Copy the Shared Drive ID from the URL: `https://drive.google.com/drive/folders/<DRIVE_ID>`
+- **Shared Drive** (Workspace only): create one, add the service account email (from the JSON file) as a "Content Manager"
+- **Regular folder** (works on any account): create a folder in your own Drive, share it with the service account email as an Editor
+- Either way, copy the ID from the URL: `https://drive.google.com/drive/folders/<ID>`
 
 **3. Configure:**
 
@@ -257,8 +273,8 @@ Analysis files can be automatically uploaded to a Google Shared Drive as formatt
 {
   "gdrive": {
     "enabled": true,
-    "service_account_file": "your-service-account.json",
-    "shared_drive_id": "YOUR_SHARED_DRIVE_ID"
+    "service_account_file": "op://Development/Google Service Account/credential",
+    "parent_folder_id": "YOUR_FOLDER_OR_SHARED_DRIVE_ID"
   }
 }
 ```
@@ -290,7 +306,7 @@ Enable/disable in your `~/.config/whisperx/settings.json`:
 
 | Icon | Meaning |
 |------|---------|
-| 🎙️ Ready •🤖 | Idle, diarization ON, ChatGPT enabled |
+| 🎙️ Ready •🤖 | Idle, diarization ON, LLM auto-analyze ON |
 | 🎙️ Ready ○ | Idle, diarization OFF |
 | 🔴 Recording | Recording in progress |
 | ⏳ Processing | Transcription in progress |
@@ -377,7 +393,7 @@ whisperx-recorder process ~/Videos/john_1on1.mov "1:1 - John" --call-type one_on
 
 Supported formats: `.mov`, `.mkv`, `.mp4`, `.avi`, `.webm`
 
-#### `analyze` - Run ChatGPT Analysis
+#### `analyze` - Run LLM Analysis
 
 Re-run analysis on existing transcript:
 
@@ -435,8 +451,8 @@ Returns JSON:
     }
   ],
   "obs_running": false,
-  "diarize_default": true,
-  "openai_enabled": true
+  "diarize_default": false,
+  "llm_enabled": true
 }
 ```
 
@@ -740,32 +756,40 @@ obs-cmd --websocket obsws://127.0.0.1:4455/YOUR_PASSWORD info
 # Check WhisperX installation
 which whisperx
 
-# Or check full path
-ls ~/anaconda3/bin/whisperx
+# Or check full path (conda or pyenv+venv, whichever you used)
+ls ~/anaconda3/envs/whisperx-recorder/bin/whisperx
+ls /path/to/call-analysis/processing-pipeline/.venv/bin/whisperx
 
-# Update path in config if different
+# Update transcription.whisperx_path in config to match
 ```
 
 **Diarization timeout:**
-- Diarization requires downloading HuggingFace models (~1GB)
+- Diarization requires downloading HuggingFace models (~1GB) and accepting their gated-model license on huggingface.co (`pyannote/speaker-diarization-3.1`, `pyannote/segmentation-3.0`) while logged in as the account tied to your `hf_token`
 - Requires active internet connection
-- Disable for offline use: `whisperx-recorder config diarize off`
+- Off by default; explicitly enable per-recording with `--diarize`, or set the default with `whisperx-recorder config diarize on`
 
 **Slow transcription:**
-- CPU transcription is slow (10-30min for 1hr recording)
+- CPU transcription is slow (roughly real-time to 2x for plain transcription; diarization on a long recording can run considerably longer on CPU — budget accordingly)
 - Consider GPU if available
-- Disable diarization for faster processing
+- Diarization is off by default for exactly this reason; only enable it when you actually need speaker labels
 
-### ChatGPT / LLM Issues
+**Segfault (exit 139) or hang mid-transcription, especially on Intel Mac:**
+- Set `KMP_DUPLICATE_LIB_OK=TRUE` and `OMP_NUM_THREADS=1` before invoking `whisperx` — see the Intel Mac note under [Python Environment](#python-environment). Already handled inside the app's own `run_whisperx()`; only relevant if you're running the `whisperx` binary directly.
+
+**`compute_type: int8`:** don't use it on this stack — it silently drops most of the transcript with no error on the torch/ctranslate2 versions this app is pinned to on Intel Mac (confirmed: dropped 3 of 4 segments on a test clip). Stick with `float32` despite the speed cost.
+
+### LLM Analysis Issues
 
 **Analysis not running:**
 ```bash
 # Check config
 cat ~/.config/whisperx/settings.json
 
-# Verify OpenAI is enabled in config.default.json
-grep -A6 '"openai"' processing-pipeline/config.default.json
+# Verify the llm section in config.default.json
+grep -A10 '"llm"' processing-pipeline/config.default.json
 ```
+
+Remember `auto_analyze: false` (the default) means analysis never runs automatically — that's expected, not a bug. Run it explicitly: `whisperx-recorder analyze <folder> --call-type X`.
 
 **API errors:**
 ```bash
@@ -773,39 +797,11 @@ grep -A6 '"openai"' processing-pipeline/config.default.json
 whisperx-recorder logs 100
 ```
 
-### Databricks-Specific Issues
-
-**"Databricks auth failed" error:**
-```bash
-# Re-authenticate with Databricks CLI
-databricks auth login --profile YOUR_PROFILE_NAME
-
-# Verify profile exists
-cat ~/.databrickscfg
-
-# Test connection
-databricks auth token --profile YOUR_PROFILE_NAME
-```
-
-**Token expired:**
-- Databricks OAuth tokens expire periodically
-- Run `databricks auth login --profile <profile>` to refresh
-- The SDK handles automatic refresh for valid sessions
-
-**Wrong model name:**
-- Check available models in your Databricks workspace
-- Model names use format: `databricks-<model-name>`
-- Common models: `databricks-gpt-5-2`, `databricks-meta-llama-3-3-70b-instruct`
-
-**SDK not installed:**
-```bash
-pip install databricks-sdk
-```
-
 Common issues:
-- Invalid API key
+- Invalid or unresolved API key (if using an `op://` reference, confirm `op read <the-reference>` works standalone — see [Secrets Management](#secrets-management))
 - Rate limiting (429 errors) - wait and retry
-- Billing not set up on OpenAI account
+- Billing/quota not set up on the provider account
+- Anthropic responses with no text content surface a specific error naming the model's `stop_reason` (e.g. a safety refusal) — check the logs for that rather than a generic failure
 
 ### Terminal Issues
 

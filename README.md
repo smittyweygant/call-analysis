@@ -1,13 +1,13 @@
 # WhisperX Call Recording & Transcription
 
-A macOS menu bar application for recording calls/meetings with OBS, transcribing them with WhisperX, and analyzing transcripts with ChatGPT.
+A macOS menu bar application for recording calls/meetings with OBS, transcribing them with WhisperX, and analyzing transcripts with an LLM (OpenAI or Anthropic).
 
 ## Features
 
 - 🎙️ **One-click recording** via SwiftBar menu bar plugin
-- 📝 **Automatic transcription** using WhisperX (OpenAI Whisper)
+- 📝 **Automatic transcription** using WhisperX (OpenAI Whisper) — the transcript is the default deliverable; diarization and LLM analysis are both opt-in
 - 🎤 **Speaker diarization** (optional) - identifies who said what
-- 🤖 **ChatGPT analysis** - AI-powered summaries with customizable prompts
+- 🤖 **LLM analysis** (optional) - AI-powered summaries via OpenAI or Anthropic, with customizable prompts
 - 📋 **Call type templates** - tailored prompts for different meeting types
 - 📤 **Google Drive integration** - auto-upload analysis to Shared Drive as Google Docs
 - ⏳ **Background processing** - start new recordings while previous ones transcribe
@@ -27,7 +27,7 @@ A macOS menu bar application for recording calls/meetings with OBS, transcribing
                         │  Background Process  │
                         │  - Extract audio     │
                         │  - Run WhisperX      │
-                        │  - ChatGPT Analysis  │
+                        │  - LLM Analysis      │
                         │  - Google Drive Upload│
                         └──────────────────────┘
                                   │
@@ -46,12 +46,12 @@ A macOS menu bar application for recording calls/meetings with OBS, transcribing
 |-----------|---------|--------------|
 | macOS 15+ | Operating system | - |
 | OBS Studio | Video/audio recording | `brew install --cask obs` |
-| obs-cmd | CLI control for OBS | `brew install obs-cmd` |
-| SwiftBar | Menu bar plugin framework | `brew install swiftbar` |
-| Python 3.10+ | Runtime | Anaconda/Miniconda |
+| obs-cmd | CLI control for OBS | **Not on Homebrew** — download the release binary for your architecture from [grigio/obs-cmd](https://github.com/grigio/obs-cmd/releases) (e.g. `obs-cmd-x64-macos.tar.gz` for Intel, `obs-cmd-arm64-macos.tar.gz` for Apple Silicon), `chmod +x`, place on your `PATH` |
+| SwiftBar | Menu bar plugin framework | `brew install --cask swiftbar` |
+| Python 3.10+ | Runtime | conda, or pyenv + venv (see [Python Environment](USER_GUIDE.md#python-environment) — **Intel Macs**: PyTorch 2.2.2 is the last version published for Intel, which caps several other dependency versions; see the troubleshooting section if you hit segfaults or dependency conflicts) |
 | WhisperX | Speech recognition | `pip install whisperx` |
 | ffmpeg | Audio extraction | `brew install ffmpeg` |
-| OpenAI API | ChatGPT analysis (optional) | API key required |
+| LLM API | Analysis (optional) — OpenAI or Anthropic | API key required, recommended via [1Password `op://` references](USER_GUIDE.md#secrets-management) rather than plaintext |
 
 ## Quick Start
 
@@ -60,27 +60,36 @@ A macOS menu bar application for recording calls/meetings with OBS, transcribing
 git clone <repo-url>
 cd call-analysis
 
-# 2. Set up Python environment
+# 2. Set up Python environment (conda shown here; pyenv + venv works equally
+#    well — see USER_GUIDE.md#python-environment, especially if you're on
+#    an Intel Mac, where conda's PyTorch build has known version conflicts)
 conda create -n whisperx-recorder python=3.10
 conda activate whisperx-recorder
 pip install -r processing-pipeline/requirements.txt
+pip install whisperx
 
 # 3. Create configuration
 cp processing-pipeline/config.default.json.template processing-pipeline/config.default.json
-# Edit config.default.json with your credentials
+# Edit config.default.json with your credentials — or, better, with
+# op://vault/item/field references resolved via the 1Password CLI at
+# runtime; see USER_GUIDE.md#secrets-management
 
-# 4. Create wrapper script
+# 4. Create wrapper script (update PYTHON to match your env from step 2)
 mkdir -p ~/.local/bin
 cat > ~/.local/bin/whisperx-recorder << 'EOF'
 #!/bin/bash
-clear
-PYTHON="$HOME/anaconda3/envs/whisperx-recorder/bin/python"
+PYTHON="$HOME/anaconda3/envs/whisperx-recorder/bin/python"   # or .venv/bin/python3
 SCRIPT="$HOME/path/to/call-analysis/processing-pipeline/whisperx_recorder.py"
-"$PYTHON" "$SCRIPT" "$@"
+exec "$PYTHON" "$SCRIPT" "$@"
 EOF
 chmod +x ~/.local/bin/whisperx-recorder
 
-# 5. Configure SwiftBar plugins folder → SwiftBarPlugins/
+# 5. Install SwiftBar and point it at the plugin folder
+brew install --cask swiftbar
+mkdir -p ~/Documents/SwiftBarPlugins
+ln -s "$(pwd)/SwiftBarPlugins/whisperx_recorder.1s.py" ~/Documents/SwiftBarPlugins/
+# Launch SwiftBar once; on first run it may prompt you to choose a plugin
+# folder — point it at ~/Documents/SwiftBarPlugins
 ```
 
 **📖 See [USER_GUIDE.md](USER_GUIDE.md) for detailed setup and usage instructions.**
@@ -94,26 +103,35 @@ chmod +x ~/.local/bin/whisperx-recorder
   "recording": {
     "output_dir": "~/OBSRecordings",
     "obs_ws_port": "4455",
-    "obs_ws_password": "YOUR_PASSWORD"
+    "obs_ws_password": "YOUR_PASSWORD",
+    "keep_video": false
   },
   "transcription": {
-    "diarize": true,
+    "diarize": false,
     "whisperx_path": "~/anaconda3/bin/whisperx",
     "hf_token": "YOUR_HUGGINGFACE_TOKEN"
   },
   "gdrive": {
     "enabled": false,
     "service_account_file": "your-service-account.json",
-    "shared_drive_id": "YOUR_SHARED_DRIVE_ID"
+    "parent_folder_id": "YOUR_DRIVE_FOLDER_ID"
   },
-  "openai": {
+  "llm": {
+    "enabled": true,
+    "auto_analyze": false,
+    "provider": "openai",
     "api_key": "YOUR_OPENAI_API_KEY",
     "model": "gpt-4o",
-    "enabled": true
+    "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY",
+    "anthropic_model": "claude-sonnet-5"
   },
   "call_types": { ... }
 }
 ```
+
+`diarize` and `llm.auto_analyze` both default to `false` — the transcript is the deliverable by default; diarization and analysis are opt-in per recording (`--diarize`, `--keep-video`/`--delete-video`) or run later on demand (`whisperx-recorder analyze <folder> --call-type X`). `llm.provider` selects `openai` or `anthropic`; only one is active at a time.
+
+Any string value above may instead be an `op://vault/item/field` reference, resolved via the 1Password CLI at the point each secret is used — see [Secrets Management](USER_GUIDE.md#secrets-management).
 
 ### User Overrides (`~/.config/whisperx/settings.json`)
 
@@ -160,7 +178,7 @@ Add or customize call types in `config.default.json`. See [USER_GUIDE.md](USER_G
     │   ├── *.srt   (subtitles)
     │   ├── *.txt   (plain text)
     │   └── *.vtt   (web subtitles)
-    └── chatgpt_analysis.md
+    └── analysis_<timestamp>_<model>.md   (if LLM analysis ran)
 ```
 
 ## Project Structure
