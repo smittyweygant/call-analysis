@@ -27,7 +27,7 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 import io
 
 # Configuration
-SERVICE_ACCOUNT_FILE = Path(__file__).parent.parent / "fe-dev-sandbox-17634e09f43b.json"
+SERVICE_ACCOUNT_FILE = Path(__file__).parent.parent / "gcp-sandbox-field-eng-88aebd10702a.json"
 OAUTH_CREDENTIALS_FILE = Path(__file__).parent.parent / "oauth_credentials.json"
 OAUTH_TOKEN_FILE = Path.home() / ".config" / "whisperx" / "gdrive_token.json"
 TARGET_FOLDER_ID = "0APWmokcmy78jUk9PVA"

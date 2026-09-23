@@ -48,7 +48,7 @@ A macOS menu bar application for recording calls/meetings with OBS, transcribing
 | OBS Studio | Video/audio recording | `brew install --cask obs` |
 | obs-cmd | CLI control for OBS | **Not on Homebrew** — download the release binary for your architecture from [grigio/obs-cmd](https://github.com/grigio/obs-cmd/releases) (e.g. `obs-cmd-x64-macos.tar.gz` for Intel, `obs-cmd-arm64-macos.tar.gz` for Apple Silicon), `chmod +x`, place on your `PATH` |
 | SwiftBar | Menu bar plugin framework | `brew install --cask swiftbar` |
-| Python 3.10+ | Runtime | conda, or pyenv + venv (see [Python Environment](USER_GUIDE.md#python-environment) — **Intel Macs**: PyTorch 2.2.2 is the last version published for Intel, which caps several other dependency versions; see the troubleshooting section if you hit segfaults or dependency conflicts) |
+| Python 3.10+ | Runtime | pyenv + venv (or conda if you already use it) — see [Python Environment](USER_GUIDE.md#python-environment). **Intel Macs**: PyTorch 2.2.2 is the last version published for Intel, which caps several other dependency versions; see the troubleshooting section if you hit segfaults or dependency conflicts |
 | WhisperX | Speech recognition | `pip install whisperx` |
 | ffmpeg | Audio extraction | `brew install ffmpeg` |
 | LLM API | Analysis (optional) — OpenAI or Anthropic | API key required, recommended via [1Password `op://` references](USER_GUIDE.md#secrets-management) rather than plaintext |
@@ -60,37 +60,21 @@ A macOS menu bar application for recording calls/meetings with OBS, transcribing
 git clone <repo-url>
 cd call-analysis
 
-# 2. Set up Python environment (conda shown here; pyenv + venv works equally
-#    well — see USER_GUIDE.md#python-environment, especially if you're on
-#    an Intel Mac, where conda's PyTorch build has known version conflicts)
-conda create -n whisperx-recorder python=3.10
-conda activate whisperx-recorder
-pip install -r processing-pipeline/requirements.txt
-pip install whisperx
+# 2. Install OBS + SwiftBar if you haven't already
+brew install --cask obs swiftbar
 
-# 3. Create configuration
-cp processing-pipeline/config.default.json.template processing-pipeline/config.default.json
-# Edit config.default.json with your credentials — or, better, with
-# op://vault/item/field references resolved via the 1Password CLI at
-# runtime; see USER_GUIDE.md#secrets-management
+# 3. Run the setup script — creates the pyenv+venv Python environment,
+#    installs obs-cmd, writes ~/.local/bin/whisperx-recorder, and points
+#    SwiftBar at ~/Documents/SwiftBarPlugins. Safe to re-run.
+./setup.sh
 
-# 4. Create wrapper script (update PYTHON to match your env from step 2)
-mkdir -p ~/.local/bin
-cat > ~/.local/bin/whisperx-recorder << 'EOF'
-#!/bin/bash
-PYTHON="$HOME/anaconda3/envs/whisperx-recorder/bin/python"   # or .venv/bin/python3
-SCRIPT="$HOME/path/to/call-analysis/processing-pipeline/whisperx_recorder.py"
-exec "$PYTHON" "$SCRIPT" "$@"
-EOF
-chmod +x ~/.local/bin/whisperx-recorder
-
-# 5. Install SwiftBar and point it at the plugin folder
-brew install --cask swiftbar
-mkdir -p ~/Documents/SwiftBarPlugins
-ln -s "$(pwd)/SwiftBarPlugins/whisperx_recorder.1s.py" ~/Documents/SwiftBarPlugins/
-# Launch SwiftBar once; on first run it may prompt you to choose a plugin
-# folder — point it at ~/Documents/SwiftBarPlugins
+# 4. Edit configuration with your credentials — or, better, with
+#    op://vault/item/field references resolved via the 1Password CLI at
+#    runtime; see USER_GUIDE.md#secrets-management
+nano processing-pipeline/config.default.json
 ```
+
+`setup.sh` covers the common case (pyenv + venv, Apple Silicon or Intel obs-cmd binary). If you use conda instead, or need to do any of this by hand, see [Manual setup](USER_GUIDE.md#manual-setup) in the user guide.
 
 **📖 See [USER_GUIDE.md](USER_GUIDE.md) for detailed setup and usage instructions.**
 
@@ -108,7 +92,7 @@ ln -s "$(pwd)/SwiftBarPlugins/whisperx_recorder.1s.py" ~/Documents/SwiftBarPlugi
   },
   "transcription": {
     "diarize": false,
-    "whisperx_path": "~/anaconda3/bin/whisperx",
+    "whisperx_path": "~/path/to/call-analysis/processing-pipeline/.venv/bin/whisperx",
     "hf_token": "YOUR_HUGGINGFACE_TOKEN"
   },
   "gdrive": {

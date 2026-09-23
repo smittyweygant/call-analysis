@@ -30,6 +30,8 @@ env/
 
 # Credentials
 fe-dev-sandbox-17634e09f43b.json
+gcp-sandbox-field-eng-74f8b28bbf54.json
+gcp-sandbox-field-eng-88aebd10702a.json
 
 # Agent context and prompts (pending strategy)
 Agent_context/

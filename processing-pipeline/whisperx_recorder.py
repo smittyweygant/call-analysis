@@ -684,10 +684,23 @@ def launch_obs():
     subprocess.run(['open', '-a', 'OBS'])
 
 
-def start_recording():
-    """Start OBS recording."""
+def start_recording() -> bool:
+    """Start OBS recording. Returns True if the command reached OBS successfully."""
     args = get_obs_cmd_args().split()
-    subprocess.run(['obs-cmd'] + args + ['recording', 'start'])
+    result = subprocess.run(['obs-cmd'] + args + ['recording', 'start'])
+    return result.returncode == 0
+
+
+def is_recording_active() -> bool:
+    """Check whether OBS confirms it is actively (and not just nominally) recording.
+
+    Catches OBS being present but unresponsive (e.g. stuck behind a blocking
+    modal dialog) - `recording start` can appear to succeed while OBS never
+    actually starts writing a file.
+    """
+    args = get_obs_cmd_args().split()
+    result = subprocess.run(['obs-cmd'] + args + ['recording', 'status-active'], capture_output=True)
+    return result.returncode == 0
 
 
 def stop_recording():
@@ -966,8 +979,24 @@ def begin_recording(
     
     # Start recording
     print("▶️  Starting recording...")
-    start_recording()
-    
+    if not start_recording():
+        print("ERROR: Failed to send start command to OBS (is it running and reachable?)", file=sys.stderr)
+        notify("Recording Failed", "Could not reach OBS to start recording")
+        return False
+
+    # Verify OBS actually confirms it's recording, not just that the command
+    # was accepted - catches OBS being stuck behind a blocking modal dialog,
+    # where `recording start` returns success but no file ever gets written.
+    import time
+    for _ in range(5):
+        time.sleep(1)
+        if is_recording_active():
+            break
+    else:
+        print("ERROR: OBS did not confirm recording started. Check OBS for a blocking dialog.", file=sys.stderr)
+        notify("Recording Failed", "OBS didn't confirm recording started - check for a blocking dialog")
+        return False
+
     # Save state
     state = {
         'recording': True,
@@ -1015,25 +1044,43 @@ def begin_recording(
 def end_recording():
     """
     Stop the current recording session and spawn background transcription.
+
+    Best-effort: failures talking to OBS (unreachable websocket, 1Password
+    secret unresolvable, etc.) must not block state cleanup and background
+    transcription — the mkv OBS already wrote to disk still needs to be
+    picked up, and leaving `recording: true` in the state file wedges the
+    SwiftBar plugin.
     """
     state = load_state()
     if not state.get('recording'):
         print("ERROR: No recording in progress", file=sys.stderr)
         return False
-    
-    # Stop recording
+
+    # Stop recording (best-effort — OBS may already be gone)
     print("⏹️  Stopping recording...")
-    stop_recording()
-    
+    try:
+        stop_recording()
+    except Exception as e:
+        print(f"⚠️  Could not signal OBS to stop (continuing with recovery): {e}", file=sys.stderr)
+
+    # Verify OBS actually confirms the recording stopped before closing it -
+    # a blind fixed sleep can race OBS's own finalization, and closing OBS
+    # while it still considers itself recording triggers its "still
+    # recording, are you sure you want to quit?" confirmation dialog.
     import time
-    time.sleep(2)  # Give OBS time to finalize
-    
+    for _ in range(5):
+        if not is_recording_active():
+            break
+        time.sleep(1)
+    else:
+        print("⚠️  OBS did not confirm recording stopped in time; closing anyway", file=sys.stderr)
+
     # Update state
     stopped_at = datetime.now().isoformat()
     paths = state['paths']
     title = state['title']
     diarize = state.get('diarize', get_diarize_setting())
-    
+
     # Update metadata
     metadata_file = paths['metadata_file']
     if os.path.exists(metadata_file):
@@ -1042,11 +1089,14 @@ def end_recording():
         metadata['recording_stopped'] = stopped_at
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
-    
-    # Close OBS
+
+    # Close OBS (best-effort)
     print("🛑 Closing OBS...")
-    close_obs()
-    
+    try:
+        close_obs()
+    except Exception as e:
+        print(f"⚠️  Could not close OBS cleanly: {e}", file=sys.stderr)
+
     # Clear recording state immediately (allows new recordings)
     clear_state()
     

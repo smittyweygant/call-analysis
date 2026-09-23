@@ -15,7 +15,7 @@
     "language": "en",
     "device": "cpu",
     "compute_type": "float32",
-    "whisperx_path": "~/anaconda3/bin/whisperx",
+    "whisperx_path": "~/path/to/call-analysis/processing-pipeline/.venv/bin/whisperx",
     "hf_token": "YOUR_HUGGINGFACE_TOKEN"
   },
   

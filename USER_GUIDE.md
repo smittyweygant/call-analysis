@@ -19,7 +19,20 @@ Complete guide for installation, configuration, and daily usage.
 
 ## Installation
 
-### Prerequisites
+### Automated setup
+
+```bash
+brew install --cask obs swiftbar
+./setup.sh
+```
+
+`setup.sh` (repo root) installs obs-cmd, creates the pyenv+venv Python environment, writes `~/.local/bin/whisperx-recorder`, and points SwiftBar at `~/Documents/SwiftBarPlugins`. It's idempotent — re-run it any time (e.g. after a repo update) to pick up dependency changes. It doesn't touch `config.default.json` beyond creating it from the template if missing and keeping `transcription.whisperx_path` in sync — your credentials are untouched.
+
+If you use conda instead of pyenv, or want to understand/customize what each step does, see the manual steps below.
+
+### Manual setup
+
+#### Prerequisites
 
 Install required tools via Homebrew:
 
@@ -40,11 +53,22 @@ mv obs-cmd /usr/local/bin/   # or ~/.local/bin if that's on your PATH
 brew install --cask obs
 ```
 
-### Python Environment
+#### Python Environment
 
-Either conda or pyenv + venv works. Pick whichever you already use for other projects — there's no functional difference for this app.
+Either pyenv + venv or conda works. Default to pyenv + venv (lighter, no separate package manager); pick conda only if you already use it for other projects.
 
-**conda:**
+**pyenv + venv (default):**
+
+```bash
+cd /path/to/call-analysis/processing-pipeline
+pyenv local 3.10.14   # any 3.10+; reuse an existing version if you have one
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install whisperx
+```
+
+**conda (alternative):**
 
 ```bash
 conda create -n whisperx-recorder python=3.10
@@ -54,24 +78,13 @@ pip install -r processing-pipeline/requirements.txt
 pip install whisperx
 ```
 
-**pyenv + venv:**
-
-```bash
-cd /path/to/call-analysis/processing-pipeline
-pyenv local 3.10.4   # any 3.10+; reuse an existing version if you have one
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install whisperx
-```
-
-Either way, set `transcription.whisperx_path` in your config to the resulting `whisperx` binary (e.g. `~/anaconda3/envs/whisperx-recorder/bin/whisperx` or `.../processing-pipeline/.venv/bin/whisperx`).
+Either way, set `transcription.whisperx_path` in your config to the resulting `whisperx` binary (e.g. `.../processing-pipeline/.venv/bin/whisperx` or `~/anaconda3/envs/whisperx-recorder/bin/whisperx`).
 
 > **Note:** WhisperX is CPU-intensive. First runs download models (~1-2GB).
 
 > **Intel Mac?** PyTorch 2.2.2 is the last version Apple published for Intel — this caps `numpy` (`<2`), which caps `scipy` (`<1.13`) and `transformers` (`4.44.x`-ish; newer `transformers` requires torch≥2.5 and silently breaks). You'll also need `matplotlib` installed explicitly (pyannote's VAD pipeline imports it but pip doesn't pull it in). If WhisperX segfaults (exit 139) or hangs mid-transcription, set `KMP_DUPLICATE_LIB_OK=TRUE` and `OMP_NUM_THREADS=1` before invoking it — multiple native libs (torch, ctranslate2, scipy) each bundle their own OpenMP runtime and collide on Intel Mac's dylib loading. This is already handled inside `run_whisperx()` in `whisperx_recorder.py`; only relevant if you're invoking WhisperX directly outside the app. See [Troubleshooting](#troubleshooting) if you hit this.
 
-### Create Wrapper Script
+#### Create Wrapper Script
 
 Create a wrapper script for easy CLI access:
 
@@ -80,7 +93,7 @@ mkdir -p ~/.local/bin
 
 cat > ~/.local/bin/whisperx-recorder << 'EOF'
 #!/bin/bash
-PYTHON="$HOME/anaconda3/envs/whisperx-recorder/bin/python"  # or .../processing-pipeline/.venv/bin/python3
+PYTHON="/path/to/call-analysis/processing-pipeline/.venv/bin/python3"  # or ~/anaconda3/envs/whisperx-recorder/bin/python if you used conda
 SCRIPT="/path/to/call-analysis/processing-pipeline/whisperx_recorder.py"  # UPDATE THIS PATH
 exec "$PYTHON" "$SCRIPT" "$@"
 EOF
@@ -97,7 +110,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-### Configure OBS
+#### Configure OBS
 
 1. Open OBS Studio
 2. Go to **Tools → WebSocket Server Settings**
@@ -105,7 +118,7 @@ source ~/.zshrc
 4. Note the port (default: 4455) and set a password
 5. Update your `config.default.json` with these values
 
-### Configure SwiftBar
+#### Configure SwiftBar
 
 SwiftBar reads plugins from a folder you point it at. Rather than setting that folder directly to the repo (which would also pick up non-plugin files), symlink just the plugin file into SwiftBar's default folder — this keeps the plugin live-updated with any repo changes without a copy step:
 
@@ -114,7 +127,7 @@ mkdir -p ~/Documents/SwiftBarPlugins
 ln -s "/path/to/call-analysis/SwiftBarPlugins/whisperx_recorder.1s.py" ~/Documents/SwiftBarPlugins/
 ```
 
-1. Launch SwiftBar. On first run it opens a folder picker — choose `~/Documents/SwiftBarPlugins`. If you miss the dialog or it doesn't appear, quit SwiftBar and set the preference directly instead: `defaults write com.ameba.SwiftBar PluginDirectory "$HOME/Documents/SwiftBarPlugins"`, then relaunch.
+1. Launch SwiftBar. On first run it opens a folder picker — choose `~/Documents/SwiftBarPlugins`. If you miss the dialog or it doesn't appear, quit SwiftBar and set the preference directly instead: `defaults write com.ameba.SwiftBar swiftBarPluginPath -string "$HOME/Documents/SwiftBarPlugins"`, then relaunch. (The preference key is `swiftBarPluginPath`, not the `PluginDirectory` this doc used to say — verified against the strings in SwiftBar's own binary.)
 2. The 🎙️ icon should appear in your menu bar within a few seconds.
 
 If the menu is empty or shows an error, the plugin's shebang (`#!/usr/bin/env python3`) needs to resolve to a Python 3 with no special dependencies — it only reads state/config files directly and shells out to the `whisperx-recorder` wrapper for actions, so the system Python is fine here even though the wrapper itself needs the WhisperX environment.
@@ -156,7 +169,7 @@ nano processing-pipeline/config.default.json
     "language": "en",                      // Transcription language
     "device": "cpu",                       // cpu or cuda
     "compute_type": "float32",             // float32 or float16 (see Troubleshooting before changing on CPU)
-    "whisperx_path": "~/anaconda3/bin/whisperx",  // Path to whisperx
+    "whisperx_path": "~/path/to/call-analysis/processing-pipeline/.venv/bin/whisperx",  // Path to whisperx
     "hf_token": "hf_xxx"                   // HuggingFace token for diarization
   },
   
@@ -756,9 +769,9 @@ obs-cmd --websocket obsws://127.0.0.1:4455/YOUR_PASSWORD info
 # Check WhisperX installation
 which whisperx
 
-# Or check full path (conda or pyenv+venv, whichever you used)
-ls ~/anaconda3/envs/whisperx-recorder/bin/whisperx
+# Or check full path (pyenv+venv or conda, whichever you used)
 ls /path/to/call-analysis/processing-pipeline/.venv/bin/whisperx
+ls ~/anaconda3/envs/whisperx-recorder/bin/whisperx
 
 # Update transcription.whisperx_path in config to match
 ```
