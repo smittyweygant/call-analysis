@@ -244,17 +244,26 @@ EOF
 
 ### Secrets Management
 
-Any secret-shaped config value — `recording.obs_ws_password`, `transcription.hf_token`, `llm.api_key`, `llm.anthropic_api_key`, `gdrive.service_account_file` — can be either a literal string or an `op://vault/item/field` reference, resolved via the [1Password CLI](https://developer.1password.com/docs/cli/) at the point the value is actually used (not eagerly at startup, so commands like `types`/`status` that don't need secrets don't trigger 1Password prompts).
+Any secret-shaped config value — `recording.obs_ws_password`, `transcription.hf_token`, `llm.api_key`, `llm.anthropic_api_key`, `gdrive.service_account_file` — can be a literal string, an `op://vault/item/field` reference, or a `keychain://service` reference, resolved at the point the value is actually used (not eagerly at startup, so commands like `types`/`status` that don't need secrets don't trigger any prompts).
 
 ```json
 {
   "llm": {
     "anthropic_api_key": "op://Development/Anthropic API Key/credential"
+  },
+  "recording": {
+    "obs_ws_password": "keychain://whisperx-obs-ws-password"
   }
 }
 ```
 
-Requires `op` installed and the 1Password desktop app signed in with CLI integration enabled (Settings → Developer). For a JSON-blob secret like a Google service-account key, minify it to one line and store it in a 1Password field rather than referencing a file path — `gdrive.service_account_file` accepts an `op://` reference the same way, resolved and parsed as JSON at connection time.
+`op://` references resolve via the [1Password CLI](https://developer.1password.com/docs/cli/) — requires `op` installed and the 1Password desktop app signed in with CLI integration enabled (Settings → Developer). For a JSON-blob secret like a Google service-account key, minify it to one line and store it in a 1Password field rather than referencing a file path — `gdrive.service_account_file` accepts an `op://` reference the same way, resolved and parsed as JSON at connection time.
+
+`keychain://service` references resolve from the macOS login keychain (account = current user, via `security find-generic-password`). Since the login keychain unlocks with your Mac session, this has effectively zero friction — no per-invocation prompt — making it a good fit for secrets that only need to survive on this one machine and don't carry much value outside it (e.g. a loopback-only OBS WebSocket password), as opposed to secrets worth 1Password's stronger at-rest guarantees and cross-device sync. Add an item with:
+
+```bash
+security add-generic-password -a "$(whoami)" -s 'whisperx-obs-ws-password' -w '<value>'
+```
 
 **Reducing repeated Touch ID prompts:** if you're invoking the CLI interactively often (e.g. via SwiftBar's "Start Recording (interactive)", which opens a new Terminal session each time), 1Password's default **Settings → Developer → "Ask approval for each new"** set to *application and terminal session* treats every new session as an unrecognized requester. Narrowing that to *application*, and setting **"Remember key approval"** to *"Until 1Password locks"* (or a fixed interval), significantly cuts prompt frequency without storing anything in plaintext.
 

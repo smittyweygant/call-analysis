@@ -95,10 +95,15 @@ def expand_path(path_str: str) -> Path:
 
 
 def resolve_secret(value: str) -> str:
-    """Resolve a config value that may be an op:// 1Password reference. Non-op:// values pass through unchanged."""
-    if not value or not value.startswith('op://'):
+    """Resolve a config value that may be an op:// 1Password reference or a
+    keychain:// macOS Keychain reference. Other values pass through unchanged."""
+    if not value:
         return value
-    return _resolve_op_reference(value)
+    if value.startswith('op://'):
+        return _resolve_op_reference(value)
+    if value.startswith('keychain://'):
+        return _resolve_keychain_reference(value)
+    return value
 
 
 @functools.lru_cache(maxsize=None)
@@ -108,6 +113,23 @@ def _resolve_op_reference(op_uri: str) -> str:
         raise RuntimeError(
             f"Failed to resolve secret from 1Password ({op_uri}): {result.stderr.strip()}\n"
             f"Make sure the 1Password CLI is installed and you're signed in (op signin)."
+        )
+    return result.stdout.strip()
+
+
+@functools.lru_cache(maxsize=None)
+def _resolve_keychain_reference(keychain_uri: str) -> str:
+    """Resolve a keychain://<service> reference from the login keychain (account = current user)."""
+    service = keychain_uri[len('keychain://'):]
+    account = os.getlogin()
+    result = subprocess.run(
+        ['security', 'find-generic-password', '-a', account, '-s', service, '-w'],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to resolve secret from Keychain (service={service}, account={account}): {result.stderr.strip()}\n"
+            f"Add it with: security add-generic-password -a {account} -s '{service}' -w '<value>'"
         )
     return result.stdout.strip()
 

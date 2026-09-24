@@ -1,7 +1,7 @@
 {
   "_comment": "WhisperX Recorder Default Configuration",
   "_docs": "Copy this file to config.default.json and fill in your values. User overrides go in ~/.config/whisperx/settings.json",
-  "_secrets_docs": "Any secret-shaped value (obs_ws_password, hf_token, api_key) may be a literal string or an op://vault/item/field reference, resolved via the 1Password CLI (op read) at the point of use. Requires the op CLI installed and signed in.",
+  "_secrets_docs": "Any secret-shaped value (obs_ws_password, hf_token, api_key) may be a literal string, an op://vault/item/field reference (resolved via the 1Password CLI at the point of use; requires op installed and signed in), or a keychain://service reference (resolved from the macOS login keychain, account = current user; add with `security add-generic-password -a $(whoami) -s '<service>' -w '<value>'`).",
 
   "recording": {
     "output_dir": "~/OBSRecordings",
