@@ -39,6 +39,13 @@ PROCESSING_STATE_FILE = USER_CONFIG_DIR / "processing_state.json"
 LOG_DIR = USER_CONFIG_DIR / "logs"
 LOG_FILE = LOG_DIR / "whisperx_recorder.log"
 
+# SwiftBar's terminal=false launches run with launchd's minimal PATH, which
+# omits Homebrew and ~/.local/bin - so bare subprocess calls to obs-cmd/op
+# below fail to resolve even though they work fine from an interactive shell.
+for _bin_dir in ('/opt/homebrew/bin', str(Path.home() / '.local/bin')):
+    if _bin_dir not in os.environ.get('PATH', '').split(os.pathsep):
+        os.environ['PATH'] = _bin_dir + os.pathsep + os.environ.get('PATH', '')
+
 
 # ─── Logging Setup ────────────────────────────────────────────────────────────
 
@@ -992,31 +999,43 @@ def begin_recording(
     Path(paths['output_dir']).mkdir(parents=True, exist_ok=True)
     Path(paths['transcript_dir']).mkdir(parents=True, exist_ok=True)
     
-    # Launch OBS if not running
-    if not is_obs_running():
-        print("🚀 Launching OBS...")
-        launch_obs()
-        import time
-        time.sleep(5)  # Wait for OBS to start
-    
-    # Start recording
-    print("▶️  Starting recording...")
-    if not start_recording():
-        print("ERROR: Failed to send start command to OBS (is it running and reachable?)", file=sys.stderr)
-        notify("Recording Failed", "Could not reach OBS to start recording")
-        return False
+    # Launch OBS and start recording. Wrapped broadly (rather than around just
+    # one call) because this runs unattended from SwiftBar's terminal=false
+    # launches, where a crash has no window to print a traceback into - any
+    # exception here must be caught, logged, and surfaced via notification
+    # instead of failing silently.
+    try:
+        # Launch OBS if not running
+        if not is_obs_running():
+            print("🚀 Launching OBS...")
+            launch_obs()
+            import time
+            time.sleep(5)  # Wait for OBS to start
 
-    # Verify OBS actually confirms it's recording, not just that the command
-    # was accepted - catches OBS being stuck behind a blocking modal dialog,
-    # where `recording start` returns success but no file ever gets written.
-    import time
-    for _ in range(5):
-        time.sleep(1)
-        if is_recording_active():
-            break
-    else:
-        print("ERROR: OBS did not confirm recording started. Check OBS for a blocking dialog.", file=sys.stderr)
-        notify("Recording Failed", "OBS didn't confirm recording started - check for a blocking dialog")
+        # Start recording
+        print("▶️  Starting recording...")
+        if not start_recording():
+            print("ERROR: Failed to send start command to OBS (is it running and reachable?)", file=sys.stderr)
+            notify("Recording Failed", "Could not reach OBS to start recording")
+            return False
+
+        # Verify OBS actually confirms it's recording, not just that the command
+        # was accepted - catches OBS being stuck behind a blocking modal dialog,
+        # where `recording start` returns success but no file ever gets written.
+        import time
+        for _ in range(5):
+            time.sleep(1)
+            if is_recording_active():
+                break
+        else:
+            print("ERROR: OBS did not confirm recording started. Check OBS for a blocking dialog.", file=sys.stderr)
+            notify("Recording Failed", "OBS didn't confirm recording started - check for a blocking dialog")
+            return False
+    except Exception as e:
+        print(f"ERROR: Failed to start recording: {e}", file=sys.stderr)
+        logger.error(f"Failed to start recording: {e}")
+        logger.error(traceback.format_exc())
+        notify("Recording Failed", str(e))
         return False
 
     # Save state
