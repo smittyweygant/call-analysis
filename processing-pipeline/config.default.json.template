@@ -2,14 +2,13 @@
   "_comment": "WhisperX Recorder Default Configuration",
   "_docs": "Copy this file to config.default.json and fill in your values. User overrides go in ~/.config/whisperx/settings.json",
   "_secrets_docs": "Any secret-shaped value (obs_ws_password, hf_token, api_key) may be a literal string, an op://vault/item/field reference (resolved via the 1Password CLI at the point of use; requires op installed and signed in), or a keychain://service reference (resolved from the macOS login keychain, account = current user; add with `security add-generic-password -a $(whoami) -s '<service>' -w '<value>'`).",
-
   "recording": {
     "output_dir": "~/OBSRecordings",
     "obs_ws_port": "4455",
     "obs_ws_password": "YOUR_OBS_WEBSOCKET_PASSWORD",
-    "keep_video": false
+    "keep_video": false,
+    "keep_audio": true
   },
-
   "transcription": {
     "diarize": false,
     "language": "en",
@@ -18,7 +17,6 @@
     "whisperx_path": "~/path/to/call-analysis/processing-pipeline/.venv/bin/whisperx",
     "hf_token": "YOUR_HUGGINGFACE_TOKEN"
   },
-  
   "gdrive": {
     "_comment": "Google Drive integration - uploads analysis to Shared Drive as Google Docs",
     "enabled": false,
@@ -26,66 +24,92 @@
     "parent_folder_id": "YOUR_DRIVE_FOLDER_ID",
     "_docs": "Folders are auto-created per call_type name under parent_folder_id. This can be a regular Drive folder with the service account granted Editor access, or a Shared Drive ID (Google Workspace only)."
   },
-  
   "llm": {
-    "_comment": "LLM provider for analysis. Supports 'openai' or 'anthropic'",
-    "provider": "openai",
+    "_provider_comment": "Choose one: `claude_cli` (default; shells to `claude -p`, no 1P key needed), `anthropic` (direct SDK, uses anthropic_api_key), `openai` (direct SDK, uses api_key). Other providers stay configured but dormant.",
+    "provider": "claude_cli",
     "enabled": true,
-    "_auto_analyze_docs": "If false, analysis doesn't run automatically after start/stop or process - use the 'analyze' command on demand instead. The transcript is the default deliverable.",
+    "claude_cli_model_label": "claude-cli",
+    "_account_comment": "Which claude-config profile backs `claude -p` calls: 'personal' or 'work'. Only used when provider is claude_cli (classifier always uses claude -p).",
+    "account": "personal",
+    "_auto_analyze_docs": "Legacy toggle for the pre-analyze-auto flow. Ignored when `analysis.auto_classify` is true (the current default).",
     "auto_analyze": false,
-
     "api_key": "YOUR_OPENAI_API_KEY",
     "model": "gpt-4o",
-
-    "_anthropic_docs": "For Anthropic, set provider to 'anthropic'",
     "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY",
     "anthropic_model": "claude-sonnet-5"
   },
-  
+  "analysis": {
+    "_comment": "Post-transcription classify + vault-write pipeline. Requires `claude` CLI on PATH and Akka MCP authenticated (see call-analysis-suite CLAUDE.md).",
+    "auto_classify": true,
+    "auto_analyze_confidence": 0.75,
+    "force_manual_all": false,
+    "classifier_prompt_file": "Agent_prompts/_meta/classifier_prompt.md",
+    "vault_write_prompt_file": "Agent_prompts/_meta/vault_write_prompt.md",
+    "vault_path": "~/Obsidian/Smitty's Vault"
+  },
+  "swiftbar": {
+    "_comment": "SwiftBar plugin display toggles. Persistent user overrides live in ~/.config/whisperx/settings.json.",
+    "show_legacy_call_types": false
+  },
   "_call_types_docs": "Define custom call types below. Each type can have: name, icon, prompt (or prompt_template for dynamic prompts), requires_person_name (for 1:1s), and context_files (array of paths relative to context_base_path in user settings, or repo root if not set)",
-  
   "call_types": {
-    "team_meeting": {
-      "name": "Team Meeting",
-      "icon": "👥",
-      "prompt": "You are analyzing a team meeting transcript. Please provide:\n1. **Meeting Summary** - A concise overview of what was discussed\n2. **Key Decisions** - Any decisions that were made\n3. **Action Items** - Tasks assigned with owners if mentioned\n4. **Follow-ups** - Items that need future attention\n\nBe specific and actionable in your analysis."
-    },
-    "interview": {
-      "_comment": "Example showing context_files usage. Files load from context_base_path (user settings) or examples/ folder",
-      "name": "Interview",
-      "icon": "👔",
-      "context_files": [
-        "examples/context/interview_shared_context.md",
-        "examples/context/interview_rubric.md"
-      ],
-      "prompt": "You are analyzing an interview transcript. Using the provided context about our hiring criteria and evaluation rubric, please provide:\n1. **Overall Assessment** - Your recommendation (Inclined/Not Inclined) with rationale\n2. **Strengths** - Key positive signals observed\n3. **Areas of Concern** - Any gaps or red flags\n4. **Role Fit** - Assessment of candidate fit for the role\n5. **Follow-up Questions** - Suggested topics for next round\n\nBe direct and specific in your evaluation."
-    },
-    "one_on_one": {
-      "name": "1:1",
-      "icon": "👤",
-      "prompt_template": "You are analyzing a 1:1 meeting transcript with {person_name}. Please provide:\n1. **Discussion Topics** - Main subjects covered\n2. **Employee Concerns** - Any issues or blockers raised\n3. **Career Development** - Growth discussions or goals mentioned\n4. **Action Items** - Follow-ups for both manager and employee\n5. **Sentiment** - Overall tone and engagement level\n6. **Notes for Next 1:1** - Topics to revisit",
-      "requires_person_name": true
-    },
     "customer_meeting": {
       "_comment": "Customer meetings prompt for company name. prompt_file loads from external markdown.",
       "name": "Customer Meeting",
-      "icon": "🤝",
+      "icon": "\ud83e\udd1d",
       "context_files": [
         "Agent_context/customer_meeting_context.md"
       ],
-      "prompt_file": "Agent_prompts/customer_meeting_evaluation_prompt.md",
+      "prompt_file": "Agent_prompts/customer_meeting_v2_prompt.md",
       "requires_person_name": true,
-      "name_prompt": "Enter customer/company name"
+      "name_prompt": "Enter customer/company name",
+      "entity_name_key": "customer_name",
+      "inference_hint": "General customer-facing call \u2014 discovery, status update, technical discussion. Not a scoped PoC-planning session."
     },
-    "project": {
-      "name": "Project Meeting",
-      "icon": "🚀",
-      "prompt": "You are analyzing a Project/Initiative meeting transcript. Please provide:\n1. **Project Status** - Current phase and overall health\n2. **Progress Update** - Milestones achieved since last meeting\n3. **Blockers** - Issues impeding progress\n4. **Risks** - Potential problems and mitigation plans\n5. **Resource Needs** - People, budget, or tool requirements\n6. **Next Steps** - Immediate priorities and timeline\n7. **Action Items** - Tasks with owners and due dates"
+    "one_on_one_bryan": {
+      "name": "1:1 \u2014 Bryan Penner",
+      "icon": "\ud83e\udded",
+      "prompt_file": "Agent_prompts/one_on_one_bryan_prompt.md",
+      "inference_hint": "1:1 with Bryan Penner (Smitty's manager). Calendar attendee will be Bryan; transcript typically covers scope shifts, priorities, feedback, career development."
     },
-    "generic": {
-      "name": "Recording",
-      "icon": "🎙️",
-      "prompt": "You are analyzing a meeting/call transcript. Please provide:\n1. **Summary** - Brief overview of the discussion\n2. **Key Points** - Main topics covered\n3. **Decisions Made** - Any conclusions reached\n4. **Action Items** - Follow-ups with owners if mentioned\n5. **Notable Quotes** - Important statements worth highlighting"
+    "one_on_one_tyler": {
+      "name": "1:1 \u2014 Tyler",
+      "icon": "\ud83e\udd1d",
+      "prompt_file": "Agent_prompts/one_on_one_tyler_prompt.md",
+      "inference_hint": "1:1 with Tyler (peer). Calendar attendee will be Tyler; transcript covers shared work, ideas, collaboration, mutual asks."
+    },
+    "one_on_one_generic": {
+      "name": "1:1",
+      "icon": "\ud83d\udc64",
+      "prompt_file": "Agent_prompts/one_on_one_generic_prompt.md",
+      "requires_person_name": true,
+      "name_prompt": "Enter person's name",
+      "entity_name_key": "person_name",
+      "inference_hint": "1:1 with someone other than Bryan or Tyler. Two-attendee calendar event or a transcript that reads as one-on-one dialogue."
+    },
+    "customer_poc_planning": {
+      "name": "Customer PoC Planning",
+      "icon": "\ud83e\uddea",
+      "prompt_file": "Agent_prompts/customer_poc_planning_prompt.md",
+      "requires_person_name": true,
+      "name_prompt": "Enter customer/company name",
+      "entity_name_key": "customer_name",
+      "inference_hint": "Customer call specifically scoping or planning a Proof-of-Concept: success criteria, technical scope, timeline, resource asks. If the call is general customer engagement, prefer customer_meeting instead."
+    },
+    "internal_project": {
+      "name": "Internal Project / Initiative Meeting",
+      "icon": "\ud83d\udea7",
+      "prompt_file": "Agent_prompts/internal_project_prompt.md",
+      "requires_person_name": true,
+      "name_prompt": "Enter project/initiative name",
+      "entity_name_key": "project_name",
+      "inference_hint": "Internal Akka project/initiative sync \u2014 status, progress, blockers, next steps. Not customer-facing, not a 1:1."
+    },
+    "default_generic": {
+      "name": "Default Analysis",
+      "icon": "\ud83d\udcdd",
+      "prompt_file": "Agent_prompts/default_analysis_prompt.md",
+      "inference_hint": "Fallback when no other type matches confidently. The classifier should return this rather than guess."
     }
   }
 }

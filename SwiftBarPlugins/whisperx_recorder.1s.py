@@ -27,6 +27,7 @@ STATE_FILE = Path.home() / ".config/whisperx/recording_state.json"
 PROCESSING_STATE_FILE = Path.home() / ".config/whisperx/processing_state.json"
 USER_SETTINGS_FILE = Path.home() / ".config/whisperx/settings.json"
 DEFAULT_CONFIG_FILE = SCRIPT_DIR / "config.default.json"
+OBS_RECORD_DIR = Path.home() / "OBSRecordings"
 
 # Icons
 ICON_IDLE = "🎙️"
@@ -36,6 +37,17 @@ ICON_PROCESSING = "⏳"
 # Wrapper script (simple path, no special chars)
 # This avoids SwiftBar issues with long OneDrive paths
 RECORDER_CMD = Path.home() / ".local/bin/whisperx-recorder"
+
+# Classifier-allowed call types (primary quick-start menu)
+ALLOWED_TYPES = [
+    'one_on_one_bryan',
+    'one_on_one_tyler',
+    'one_on_one_generic',
+    'customer_meeting',
+    'customer_poc_planning',
+    'internal_project',
+    'default_generic',
+]
 
 
 def load_state() -> dict:
@@ -53,14 +65,14 @@ def load_processing_jobs() -> list:
     """Load all active processing jobs, filtering out dead processes."""
     if not PROCESSING_STATE_FILE.exists():
         return []
-    
+
     try:
         import os
         with open(PROCESSING_STATE_FILE, 'r') as f:
             data = json.load(f)
-        
+
         jobs = data.get('jobs', [])
-        
+
         # Filter to only jobs with running processes
         active_jobs = []
         for job in jobs:
@@ -71,13 +83,46 @@ def load_processing_jobs() -> list:
                     active_jobs.append(job)
                 except ProcessLookupError:
                     pass
-        
+
         # Update file if we removed any dead jobs
         if len(active_jobs) != len(jobs):
             with open(PROCESSING_STATE_FILE, 'w') as f:
                 json.dump({'jobs': active_jobs}, f, indent=2)
-        
+
         return active_jobs
+    except:
+        return []
+
+
+def load_triage_items() -> list:
+    """Scan OBS_RECORD_DIR for needs_triage.json markers. Return list of dicts with 'folder', 'meeting_title', 'classifier_output'."""
+    if not OBS_RECORD_DIR.exists():
+        return []
+
+    try:
+        # Get up to 20 most recent subdirectories
+        subdirs = sorted(
+            [d for d in OBS_RECORD_DIR.iterdir() if d.is_dir()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )[:20]
+
+        triage_items = []
+        for folder in subdirs:
+            triage_file = folder / "needs_triage.json"
+            if triage_file.exists():
+                try:
+                    with open(triage_file, 'r') as f:
+                        triage_data = json.load(f)
+                    triage_items.append({
+                        'folder': str(folder),
+                        'meeting_title': triage_data.get('meeting_title', folder.name),
+                        'classifier_output': triage_data.get('classifier_output', {})
+                    })
+                except:
+                    pass
+
+        return triage_items
     except:
         return []
 
@@ -86,8 +131,11 @@ def load_settings() -> dict:
     """Load settings with cascading priority: defaults -> user overrides."""
     config = {
         'transcription': {'diarize': False},
+        'recording': {'keep_video': False, 'keep_audio': True},
+        'analysis': {'auto_classify': False, 'force_manual_all': False},
+        'swiftbar': {'show_legacy_call_types': False},
         'llm': {'enabled': False, 'auto_analyze': False},
-        'call_types': {}
+        'call_types': {},
     }  # Fallback
 
     # Load project defaults
@@ -97,6 +145,12 @@ def load_settings() -> dict:
                 project_config = json.load(f)
                 if 'transcription' in project_config:
                     config['transcription'].update(project_config['transcription'])
+                if 'recording' in project_config:
+                    config['recording'].update(project_config['recording'])
+                if 'analysis' in project_config:
+                    config['analysis'].update(project_config['analysis'])
+                if 'swiftbar' in project_config:
+                    config['swiftbar'].update(project_config['swiftbar'])
                 if 'llm' in project_config:
                     config['llm'].update(project_config['llm'])
                 if 'call_types' in project_config:
@@ -111,6 +165,12 @@ def load_settings() -> dict:
                 user_config = json.load(f)
                 if 'transcription' in user_config:
                     config['transcription'].update(user_config['transcription'])
+                if 'recording' in user_config:
+                    config['recording'].update(user_config['recording'])
+                if 'analysis' in user_config:
+                    config['analysis'].update(user_config['analysis'])
+                if 'swiftbar' in user_config:
+                    config['swiftbar'].update(user_config['swiftbar'])
                 if 'llm' in user_config:
                     config['llm'].update(user_config['llm'])
         except:
@@ -127,6 +187,8 @@ def is_llm_configured(settings: dict) -> bool:
     provider = llm_config.get('provider', 'openai')
     if provider == 'anthropic':
         return bool(llm_config.get('anthropic_api_key'))
+    elif provider == 'claude_cli':
+        return True  # auth is the CLI's session login, not a stored credential
     return bool(llm_config.get('api_key'))
 
 
@@ -147,6 +209,12 @@ def main():
     state = load_state()
     processing_jobs = load_processing_jobs()
     settings = load_settings()
+    # Folders currently being re-triaged in the background (see
+    # analyze-auto-async) - hide their stale "needs triage" entry while a
+    # job is actively working on them, rather than showing both at once.
+    retriaging_folders = {job['folder'] for job in processing_jobs if job.get('folder')}
+    triage_items = [item for item in load_triage_items() if item['folder'] not in retriaging_folders]
+    triage_count = len(triage_items)
     is_recording = state.get('recording', False)
     processing_count = len(processing_jobs)
     diarize_enabled = settings.get('transcription', {}).get('diarize', False)
@@ -170,9 +238,12 @@ def main():
             print(f"{ICON_PROCESSING} {processing_count} Processing | color=orange")
     else:
         # Show status indicators in idle state
-        diarize_indicator = "•" if diarize_enabled else "○"
-        ai_indicator = "🤖" if auto_analyze_enabled else ""
-        print(f"{ICON_IDLE} Ready {diarize_indicator}{ai_indicator}")
+        if triage_count > 0:
+            print(f"{ICON_IDLE} Ready ⚠️ {triage_count} | color=orange")
+        else:
+            diarize_indicator = "•" if diarize_enabled else "○"
+            ai_indicator = "🤖" if auto_analyze_enabled else ""
+            print(f"{ICON_IDLE} Ready {diarize_indicator}{ai_indicator}")
     
     # ─── Dropdown Menu ────────────────────────────────────────────────────────
     print("---")
@@ -212,26 +283,93 @@ def main():
             print("---")
         
         # ─── Settings ─────────────────────────────────────────────────────────
-        diarize_status = "✓ On" if diarize_enabled else "✗ Off"
-        
-        print(f"Speaker Diarization: {diarize_status}")
-        print(f"--Turn On | bash={RECORDER_CMD} param1=config param2=diarize param3=on terminal=false refresh=true")
-        print(f"--Turn Off (faster, offline) | bash={RECORDER_CMD} param1=config param2=diarize param3=off terminal=false refresh=true")
-        
-        if auto_analyze_enabled:
-            print(f"🤖 LLM Analysis: auto-run on | color=green")
-        elif llm_configured:
-            print(f"🤖 LLM Analysis: configured, auto-run off | color=gray")
-        else:
-            print(f"🤖 LLM Analysis: not configured | color=gray")
-        
+
+        # Needs Triage section
+        if triage_count > 0:
+            print(f"⚠️ Needs Triage ({triage_count}) | color=orange")
+            for item in triage_items:
+                folder = item['folder']
+                title = item['meeting_title']
+                classifier_out = item.get('classifier_output', {})
+                confidence = classifier_out.get('confidence', 0.0)
+                reason = classifier_out.get('reason', '')
+                # Top-level entry per triage item
+                print(f"--{truncate_title(title, 30)} | size=12")
+                print(f"----Confidence: {confidence:.2f} | size=10 color=gray")
+                if reason:
+                    print(f"----{truncate_title(reason, 40)} | size=10 color=gray")
+                # Force-type submenu
+                print(f"----Classify as: | size=10 color=gray")
+                # Emit each allowed type as a clickable item that re-triages in
+                # the background (analyze-auto-async), so the menu can show it
+                # as an active processing job instead of leaving this same
+                # "needs triage" entry up for as long as re-classification takes.
+                for ct_id in ALLOWED_TYPES:
+                    ct = call_types.get(ct_id, {})
+                    icon = ct.get('icon', '📝')
+                    name = ct.get('name', ct_id)
+                    print(f"-----{icon} {name} | bash={RECORDER_CMD} param1=analyze-auto-async param2={folder} param3={ct_id} param4={title} terminal=false refresh=true")
+            print("---")
+
+        # ─── Settings Group ───────────────────────────────────────────────────
+        print("Settings:")
+
+        # Diarization toggle
+        diarize_next = "off" if diarize_enabled else "on"
+        diarize_hint = " (faster, offline)" if diarize_enabled else ""
+        print(f"Speaker Diarization{diarize_hint} | checked={'true' if diarize_enabled else 'false'} bash={RECORDER_CMD} param1=config param2=diarize param3={diarize_next} terminal=false refresh=true")
+
+        # Recording toggles
+        recording_cfg = settings.get('recording', {})
+        keep_audio = recording_cfg.get('keep_audio', True)
+        keep_video = recording_cfg.get('keep_video', False)
+
+        audio_next = "off" if keep_audio else "on"
+        print(f"Keep audio after processing | checked={'true' if keep_audio else 'false'} bash={RECORDER_CMD} param1=config param2=keep_audio param3={audio_next} terminal=false refresh=true")
+
+        video_next = "off" if keep_video else "on"
+        print(f"Keep video after processing | checked={'true' if keep_video else 'false'} bash={RECORDER_CMD} param1=config param2=keep_video param3={video_next} terminal=false refresh=true")
+
+        # Analysis toggles
+        analysis_cfg = settings.get('analysis', {})
+        auto_classify = analysis_cfg.get('auto_classify', False)
+        force_manual = analysis_cfg.get('force_manual_all', False)
+
+        auto_classify_next = "off" if auto_classify else "on"
+        print(f"Auto-classify after transcription | checked={'true' if auto_classify else 'false'} bash={RECORDER_CMD} param1=config param2=auto_classify param3={auto_classify_next} terminal=false refresh=true")
+
+        force_manual_next = "off" if force_manual else "on"
+        print(f"Force manual triage for all calls | checked={'true' if force_manual else 'false'} bash={RECORDER_CMD} param1=config param2=force_manual_all param3={force_manual_next} terminal=false refresh=true")
+
+        # SwiftBar toggles
+        swiftbar_cfg = settings.get('swiftbar', {})
+        show_legacy = swiftbar_cfg.get('show_legacy_call_types', False)
+
+        show_legacy_next = "off" if show_legacy else "on"
+        print(f"Show legacy call types | checked={'true' if show_legacy else 'false'} bash={RECORDER_CMD} param1=config param2=show_legacy_call_types param3={show_legacy_next} terminal=false refresh=true")
+
+        # LLM Analysis checkbox
+        llm_cfg = settings.get('llm', {})
+        llm_enabled = llm_cfg.get('enabled', False)
+        llm_enabled_next = "off" if llm_enabled else "on"
+        print(f"🤖 Enable LLM Analysis | checked={'true' if llm_enabled else 'false'} bash={RECORDER_CMD} param1=config param2=llm_enabled param3={llm_enabled_next} terminal=false refresh=true")
+
+        # Provider (Claude account) submenu
+        claude_account = llm_cfg.get('account', 'personal')
+        print("Provider:")
+        print(f"--Claude - Work | checked={'true' if claude_account == 'work' else 'false'} bash={RECORDER_CMD} param1=config-set param2=claude_account param3=work terminal=false refresh=true")
+        print(f"--Claude - Personal (default) | checked={'true' if claude_account == 'personal' else 'false'} bash={RECORDER_CMD} param1=config-set param2=claude_account param3=personal terminal=false refresh=true")
+
         print("---")
-        
+
+        # ─── Quick Start ───────────────────────────────────────────────────────
+        print(f"▶️ Quick Start | bash={RECORDER_CMD} param1=start param2=--call-type param3=default_generic terminal=false refresh=true")
+
         # ─── Interactive Start (with call type selection) ─────────────────────
         if diarize_enabled:
-            print(f"▶️ Start Recording (interactive) | bash={RECORDER_CMD} param1=start terminal=true refresh=true")
+            print(f"▶️ Start Recording (choose type) | bash={RECORDER_CMD} param1=start terminal=true refresh=true")
         else:
-            print(f"▶️ Start Recording (interactive) | bash={RECORDER_CMD} param1=start param2=--no-diarize terminal=true refresh=true")
+            print(f"▶️ Start Recording (choose type) | bash={RECORDER_CMD} param1=start param2=--no-diarize terminal=true refresh=true")
         
         # ─── Quick Start by Call Type ─────────────────────────────────────────
         print("---")
@@ -239,13 +377,22 @@ def main():
         
         # Build diarize flag
         diarize_flag = "" if diarize_enabled else " param5=--no-diarize"
-        
-        # Dynamic call type menu from config
+
+        # Separate primary (classifier-allowed) and legacy call types
+        primary_types = {}
+        legacy_types = {}
         for ct_id, ct_info in call_types.items():
+            if ct_id in ALLOWED_TYPES:
+                primary_types[ct_id] = ct_info
+            else:
+                legacy_types[ct_id] = ct_info
+
+        # Emit primary types first
+        for ct_id, ct_info in primary_types.items():
             icon = ct_info.get('icon', '📝')
             name = ct_info.get('name', ct_id)
             requires_person = ct_info.get('requires_person_name', False)
-            
+
             if requires_person:
                 # 1:1s need terminal for person name input
                 if diarize_enabled:
@@ -258,6 +405,28 @@ def main():
                     print(f"--{icon} {name} | bash={RECORDER_CMD} param1=start param2={name} param3=--call-type param4={ct_id} terminal=false refresh=true")
                 else:
                     print(f"--{icon} {name} | bash={RECORDER_CMD} param1=start param2={name} param3=--call-type param4={ct_id} param5=--no-diarize terminal=false refresh=true")
+
+        # Emit legacy types in a nested submenu (guarded by show_legacy setting)
+        show_legacy = settings.get('swiftbar', {}).get('show_legacy_call_types', False)
+        if show_legacy and legacy_types:
+            print("--Legacy call types")
+            for ct_id, ct_info in legacy_types.items():
+                icon = ct_info.get('icon', '📝')
+                name = ct_info.get('name', ct_id)
+                requires_person = ct_info.get('requires_person_name', False)
+
+                if requires_person:
+                    # 1:1s need terminal for person name input
+                    if diarize_enabled:
+                        print(f"----{icon} {name} (enter name) | bash={RECORDER_CMD} param1=start param2=--call-type param3={ct_id} terminal=true refresh=true")
+                    else:
+                        print(f"----{icon} {name} (enter name) | bash={RECORDER_CMD} param1=start param2=--call-type param3={ct_id} param4=--no-diarize terminal=true refresh=true")
+                else:
+                    # Regular types can quick start
+                    if diarize_enabled:
+                        print(f"----{icon} {name} | bash={RECORDER_CMD} param1=start param2={name} param3=--call-type param4={ct_id} terminal=false refresh=true")
+                    else:
+                        print(f"----{icon} {name} | bash={RECORDER_CMD} param1=start param2={name} param3=--call-type param4={ct_id} param5=--no-diarize terminal=false refresh=true")
     
     # ─── Settings & Info ──────────────────────────────────────────────────────
     print("---")

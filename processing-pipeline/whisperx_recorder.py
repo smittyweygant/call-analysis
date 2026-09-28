@@ -128,7 +128,11 @@ def _resolve_op_reference(op_uri: str) -> str:
 def _resolve_keychain_reference(keychain_uri: str) -> str:
     """Resolve a keychain://<service> reference from the login keychain (account = current user)."""
     service = keychain_uri[len('keychain://'):]
-    account = os.getlogin()
+    # `os.getlogin()` returns "root" (or errors) when there's no controlling
+    # terminal - which is exactly the case for SwiftBar's `terminal=false`
+    # launches. `pwd.getpwuid(os.getuid())` works regardless.
+    import pwd
+    account = pwd.getpwuid(os.getuid()).pw_name
     result = subprocess.run(
         ['security', 'find-generic-password', '-a', account, '-s', service, '-w'],
         capture_output=True, text=True
@@ -243,6 +247,11 @@ def get_keep_video_setting() -> bool:
     return _config['recording'].get('keep_video', False)
 
 
+def get_keep_audio_setting() -> bool:
+    """Get current keep-audio setting (preserve extracted audio after transcription)."""
+    return _config['recording'].get('keep_audio', True)
+
+
 # ─── OpenAI Config Accessors ──────────────────────────────────────────────────
 
 def get_llm_config() -> dict:
@@ -255,6 +264,24 @@ def get_llm_provider() -> str:
     return get_llm_config().get('provider', 'openai')
 
 
+def get_claude_account() -> str:
+    """Which claude-config profile ('personal' or 'work') backs `claude -p` calls."""
+    return get_llm_config().get('account', 'personal')
+
+
+_CLAUDE_ACCOUNT_DIRS = {
+    'personal': '~/.claude-personal',
+    'work': '~/.claude-work',
+}
+
+
+def _claude_cli_env() -> dict:
+    """Environment for `claude -p` subprocess calls, pinned to the configured account."""
+    account = get_claude_account()
+    config_dir = os.path.expanduser(_CLAUDE_ACCOUNT_DIRS.get(account, _CLAUDE_ACCOUNT_DIRS['personal']))
+    return {**os.environ, 'CLAUDE_CONFIG_DIR': config_dir}
+
+
 def is_llm_enabled() -> bool:
     """Check if LLM analysis is enabled and properly configured."""
     llm_config = get_llm_config()
@@ -264,6 +291,8 @@ def is_llm_enabled() -> bool:
     provider = llm_config.get('provider', 'openai')
     if provider == 'anthropic':
         return bool(llm_config.get('anthropic_api_key'))
+    elif provider == 'claude_cli':
+        return True  # already confirmed enabled above; auth is the CLI's session login
     else:
         return bool(llm_config.get('api_key'))
 
@@ -638,15 +667,41 @@ def load_context_files(context_file_paths: list) -> str:
     return ""
 
 
-def set_diarize_setting(enabled: bool):
-    """Set diarization preference (saves to user settings)."""
-    user_settings = get_user_settings()
-    if 'transcription' not in user_settings:
-        user_settings['transcription'] = {}
-    user_settings['transcription']['diarize'] = enabled
-    save_user_settings(user_settings)
+_TOGGLE_MAP = {
+    'diarize': ('transcription', 'diarize'),
+    'keep_video': ('recording', 'keep_video'),
+    'keep_audio': ('recording', 'keep_audio'),
+    'auto_classify': ('analysis', 'auto_classify'),
+    'force_manual_all': ('analysis', 'force_manual_all'),
+    'show_legacy_call_types': ('swiftbar', 'show_legacy_call_types'),
+    'llm_enabled': ('llm', 'enabled'),
+}
+
+_VALUE_MAP = {
+    'claude_account': ('llm', 'account', {'personal', 'work'}),
+}
+
+
+def set_toggle(name: str, enabled: bool):
+    """Persist a boolean setting to the user's settings.json (Tier-1 config toggle)."""
+    section, key = _TOGGLE_MAP[name]
+    settings = get_user_settings()
+    settings.setdefault(section, {})[key] = enabled
+    save_user_settings(settings)
     reload_config()
-    print(f"Diarization {'enabled' if enabled else 'disabled'}")
+    logger.info(f"Set {section}.{key} = {enabled}")
+
+
+def set_value(name: str, value: str):
+    """Persist a string-valued setting to the user's settings.json (Tier-1 config)."""
+    section, key, allowed = _VALUE_MAP[name]
+    if value not in allowed:
+        raise ValueError(f"Invalid value for {name}: {value}. Valid: {', '.join(sorted(allowed))}")
+    settings = get_user_settings()
+    settings.setdefault(section, {})[key] = value
+    save_user_settings(settings)
+    reload_config()
+    logger.info(f"Set {section}.{key} = {value}")
 
 
 # ─── File Naming ──────────────────────────────────────────────────────────────
@@ -937,6 +992,51 @@ def prompt_for_title() -> str:
     return title if title else "Recording"
 
 
+def spawn_calendar_snapshot(output_dir: str):
+    """
+    Fire-and-forget a `claude -p` call that captures nearby calendar events via
+    the Akka MCP gateway, for the classifier to use later. Never blocks
+    recording start - if `claude` isn't on PATH or the call fails, the
+    snapshot file is simply never written and analyze-auto proceeds
+    transcript-only.
+    """
+    snapshot_path = Path(output_dir) / "calendar_snapshot.json"
+
+    prompt = (
+        "Call the GoogleCalendar_list_events tool via the Akka MCP gateway "
+        "for the primary calendar, with timeMin = now - 15 minutes and "
+        "timeMax = now + 45 minutes. Return the raw tool output as JSON "
+        "only - no prose, no code fence."
+    )
+
+    # SwiftBar's terminal=false launches run with launchd's minimal PATH,
+    # which omits Homebrew/user-local dirs - mirror the module-level PATH
+    # patch (see top of file) plus the `claude` CLI's own local install dir.
+    env = _claude_cli_env()
+    extra_dirs = ('/opt/homebrew/bin', '/usr/local/bin',
+                  str(Path.home() / '.local/bin'), str(Path.home() / '.claude/local'))
+    path_parts = env.get('PATH', '').split(os.pathsep)
+    for extra_dir in extra_dirs:
+        if extra_dir not in path_parts:
+            path_parts.insert(0, extra_dir)
+    env['PATH'] = os.pathsep.join(path_parts)
+
+    try:
+        with open(snapshot_path, 'w', encoding='utf-8') as snapshot_file:
+            process = subprocess.Popen(
+                ['claude', '-p', prompt, '--dangerously-skip-permissions'],
+                stdout=snapshot_file,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
+            )
+        logger.info(f"Calendar snapshot spawned (pid={process.pid})")
+    except FileNotFoundError:
+        logger.warning("Calendar snapshot skipped: `claude` not found on PATH")
+    except Exception as e:
+        logger.warning(f"Calendar snapshot failed to spawn: {e}")
+
+
 def begin_recording(
     title: str = None,
     interactive: bool = False,
@@ -1049,7 +1149,11 @@ def begin_recording(
         'paths': paths
     }
     save_state(state)
-    
+
+    # Fire off a calendar snapshot in the background for the analyze-auto
+    # classifier to consult later - never blocks recording start.
+    spawn_calendar_snapshot(paths['output_dir'])
+
     # Get call type info for display
     call_type_info = get_call_type(call_type)
     call_type_name = call_type_info.get('name', call_type)
@@ -1189,6 +1293,40 @@ def spawn_background_processing(state: dict, diarize: bool):
         'diarize': diarize,
         'call_type': state.get('call_type', 'generic'),
         'call_type_name': call_type_info.get('name', 'Recording'),
+    }
+    add_processing_job(job)
+
+
+def spawn_background_analyze_auto(folder: str, force_type_id: str, meeting_title: str):
+    """Spawn a background process to re-run analyze_auto with a forced call type
+    (manual triage resolution), so the SwiftBar menu can show it as an active
+    processing job instead of leaving the stale "needs triage" indicator up
+    for however long re-classification takes."""
+    script_path = Path(__file__).resolve()
+    bg_args = {'folder': folder, 'force_type_id': force_type_id}
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        '_analyze_auto_background',
+        json.dumps(bg_args),
+    ]
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    call_type_info = get_call_type(force_type_id)
+    job = {
+        'pid': process.pid,
+        'title': meeting_title,
+        'started_at': datetime.now().isoformat(),
+        'folder': folder,
+        'call_type': force_type_id,
+        'call_type_name': call_type_info.get('name', force_type_id),
     }
     add_processing_job(job)
 
@@ -1401,9 +1539,12 @@ def analyze_with_llm(
         else:
             prompt = call_type.get('prompt', '')
     
-    # Substitute person_name if present in prompt (works for both file and inline)
-    if person_name and '{person_name}' in prompt:
-        prompt = prompt.format(person_name=person_name)
+    # Substitute the entity name if present in prompt (works for both file and
+    # inline). `entity_name_key` lets a call type collect something other than
+    # a person (customer, project) while `person_name` still carries the value.
+    entity_key = call_type.get('entity_name_key', 'person_name')
+    if person_name and ('{' + entity_key + '}') in prompt:
+        prompt = prompt.format(**{entity_key: person_name})
     
     if not prompt:
         logger.warning(f"No prompt configured for call type '{call_type_id}' - using generic")
@@ -1422,12 +1563,15 @@ def analyze_with_llm(
     
     user_message = f"## Meeting: {title}\n\n## Transcript:\n\n{transcript}"
     
-    # Determine provider and model
-    provider = llm_config.get('provider', 'openai')
+    # Determine provider and model. Three providers are supported side-by-side
+    # so a different one can be selected via `llm.provider` for experiments.
+    provider = llm_config.get('provider', 'claude_cli')
     if provider == 'anthropic':
         model = llm_config.get('anthropic_model', 'claude-sonnet-5')
-    else:
+    elif provider == 'openai':
         model = llm_config.get('model', 'gpt-4o')
+    else:  # claude_cli - runs whatever model the local `claude` CLI is set to
+        model = llm_config.get('claude_cli_model_label', 'claude-cli')
 
     logger.info(f"Sending to LLM: provider={provider}, model={model}, transcript_len={len(transcript)}")
     print(f"🤖 Analyzing transcript with {provider}...")
@@ -1438,7 +1582,23 @@ def analyze_with_llm(
     print()
 
     try:
-        if provider == 'anthropic':
+        if provider == 'claude_cli':
+            combined_prompt = f"{system_message}\n\n---\n\n{user_message}"
+            logger.info("Calling `claude -p` for analysis...")
+            result = subprocess.run(
+                ['claude', '-p', combined_prompt, '--dangerously-skip-permissions'],
+                capture_output=True, text=True, timeout=600, env=_claude_cli_env(),
+            )
+            if result.returncode != 0:
+                logger.error(f"`claude -p` exited {result.returncode}: {result.stderr.strip()}")
+                print(f"❌ `claude -p` analysis failed (exit {result.returncode})", file=sys.stderr)
+                return None
+            analysis = result.stdout.strip()
+            if not analysis:
+                logger.error("`claude -p` produced empty output")
+                return None
+            logger.info(f"`claude -p` analysis successful ({len(analysis)} chars)")
+        elif provider == 'anthropic':
             import anthropic
             logger.debug("Creating Anthropic client...")
             client = anthropic.Anthropic(api_key=resolve_secret(llm_config['anthropic_api_key']))
@@ -1548,12 +1708,308 @@ def analyze_with_llm(
         return None
 
 
+# ─── Auto-Classify + Analyze + Vault-Write ────────────────────────────────────
+
+# Call types the classifier is allowed to choose between. Legacy types
+# (interview, sales-pipeline, etc.) are out of scope for auto-classification -
+# they stay reachable only via explicit --call-type.
+CLASSIFIER_ALLOWED_TYPE_IDS = [
+    "one_on_one_bryan", "one_on_one_tyler", "one_on_one_generic",
+    "customer_meeting", "customer_poc_planning", "internal_project", "default_generic",
+]
+
+
+def _resolve_prompt_template_path(relative_path: str) -> Path:
+    """Resolve a prompt file path under context_base_path, mirroring the
+    resolution analyze_with_llm() uses for call_type prompt_file entries."""
+    base_path = Path(_config.get('context_base_path', SCRIPT_DIR.parent))
+    return base_path / relative_path
+
+
+def _build_classifier_registry() -> list:
+    """Build the CALL_TYPE_REGISTRY_JSON payload for the classifier prompt."""
+    call_types = get_call_types()
+    registry = []
+    for type_id in CLASSIFIER_ALLOWED_TYPE_IDS:
+        call_type = call_types.get(type_id)
+        if not call_type:
+            continue
+        entry = {"id": type_id, "name": call_type.get('name', type_id)}
+        if call_type.get('inference_hint'):
+            entry['inference_hint'] = call_type['inference_hint']
+        registry.append(entry)
+    return registry
+
+
+def _resolve_llm_model_name() -> str:
+    """Compute the model name that analyze_with_llm() will use, mirroring its
+    own provider/model selection logic."""
+    llm_config = get_llm_config()
+    provider = llm_config.get('provider', 'claude_cli')
+    if provider == 'anthropic':
+        return llm_config.get('anthropic_model', 'claude-sonnet-5')
+    if provider == 'openai':
+        return llm_config.get('model', 'gpt-4o')
+    return llm_config.get('claude_cli_model_label', 'claude-cli')
+
+
+def _classify_call(transcript: str, calendar_snapshot: Optional[dict]) -> dict:
+    """
+    Run the classifier prompt through `claude -p` and parse its JSON verdict.
+    Raises on any failure (missing config/prompt file, `claude` not on PATH,
+    timeout, or unparseable output) - callers treat that as a classification
+    failure and route to manual triage.
+    """
+    analysis_config = get_config().get('analysis', {})
+    prompt_file_rel = analysis_config.get('classifier_prompt_file')
+    if not prompt_file_rel:
+        raise RuntimeError("analysis.classifier_prompt_file not configured")
+
+    template_path = _resolve_prompt_template_path(prompt_file_rel)
+    template = template_path.read_text(encoding='utf-8')
+
+    excerpt = transcript[:8000]
+    calendar_json = json.dumps(calendar_snapshot) if calendar_snapshot is not None else "null"
+    registry_json = json.dumps(_build_classifier_registry(), indent=2)
+
+    prompt = (
+        template
+        .replace('[TRANSCRIPT_EXCERPT]', excerpt)
+        .replace('[CALENDAR_SNAPSHOT_JSON]', calendar_json)
+        .replace('[CALL_TYPE_REGISTRY_JSON]', registry_json)
+    )
+
+    result = subprocess.run(
+        ['claude', '-p', prompt, '--dangerously-skip-permissions'],
+        capture_output=True, text=True, timeout=120, env=_claude_cli_env(),
+    )
+    raw_output = result.stdout.strip()
+    # Claude sometimes wraps JSON in a ```json code fence or prose despite the
+    # prompt asking for strict JSON only. Extract the outermost {...} block.
+    match = re.search(r'\{.*\}', raw_output, re.DOTALL)
+    payload = match.group(0) if match else raw_output
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        logger.error(f"Classifier output was not valid JSON: {raw_output}")
+        raise
+
+
+def write_needs_triage(folder: str, classifier_output: dict, meeting_title: str, transcript_dir: str):
+    """Write needs_triage.json marking a recording for manual review."""
+    analysis_config = get_config().get('analysis', {})
+    triage = {
+        'recording_folder': str(folder),
+        'meeting_title': meeting_title,
+        'transcript_dir': str(transcript_dir),
+        'classified_at': datetime.now().isoformat(),
+        'classifier_output': classifier_output,
+        'auto_analyze_confidence_threshold': analysis_config.get('auto_analyze_confidence', 0.75),
+        'force_manual_all': analysis_config.get('force_manual_all', False),
+    }
+    triage_path = Path(folder) / "needs_triage.json"
+    with open(triage_path, 'w', encoding='utf-8') as f:
+        json.dump(triage, f, indent=2)
+    logger.info(f"Wrote needs_triage.json: {triage_path}")
+
+
+def analyze_auto(recording_folder: str, force_type_id: Optional[str] = None) -> bool:
+    """
+    Classify a finished recording, run analysis with the inferred call type,
+    and write the result into the Obsidian vault - or route to manual triage
+    when the classifier is unsure (or `analysis.force_manual_all` is set).
+
+    Returns True if analysis (and best-effort vault write) completed; False
+    if the recording was routed to manual triage.
+    """
+    folder = Path(recording_folder).expanduser().resolve()
+    if not folder.exists():
+        print(f"ERROR: Recording folder not found: {folder}", file=sys.stderr)
+        logger.error(f"analyze_auto: recording folder not found: {folder}")
+        return False
+
+    # Load metadata (best-effort - a recording processed outside the normal
+    # flow may not have one).
+    meeting_title = folder.name
+    metadata_person_name = None
+    metadata_files = list(folder.glob('*_metadata.json'))
+    if metadata_files:
+        try:
+            with open(metadata_files[0], 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            meeting_title = metadata.get('meeting_title', meeting_title)
+            metadata_person_name = metadata.get('person_name')
+        except json.JSONDecodeError as e:
+            logger.warning(f"Could not parse metadata in {folder}: {e}")
+
+    # Load transcript
+    transcript_dirs = list(folder.glob('*_transcript'))
+    if not transcript_dirs:
+        print(f"ERROR: No transcript directory found in {folder}", file=sys.stderr)
+        logger.error(f"analyze_auto: no transcript directory in {folder}")
+        return False
+    transcript_dir = transcript_dirs[0]
+    transcript = load_transcript(str(transcript_dir))
+    if not transcript:
+        print("ERROR: Could not load transcript", file=sys.stderr)
+        logger.error(f"analyze_auto: could not load transcript from {transcript_dir}")
+        return False
+
+    # Load calendar snapshot, if any - missing/unparseable both mean "no signal"
+    calendar_snapshot = None
+    snapshot_path = folder / "calendar_snapshot.json"
+    if snapshot_path.exists():
+        try:
+            with open(snapshot_path, 'r', encoding='utf-8') as f:
+                calendar_snapshot = json.load(f)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Could not parse calendar snapshot {snapshot_path}: {e}")
+
+    analysis_config = get_config().get('analysis', {})
+
+    # Classify (or trust the forced type)
+    if force_type_id:
+        classification = {
+            "call_type_id": force_type_id,
+            "confidence": 1.0,
+            "reason": "forced by --force-type",
+            "inferred_person": None,
+            "inferred_customer": None,
+            "inferred_project": None,
+        }
+        classification_failed = False
+    else:
+        try:
+            classification = _classify_call(transcript, calendar_snapshot)
+            classification_failed = False
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"Classifier timed out: {e}")
+            classification = {
+                "call_type_id": "default_generic", "confidence": 0.0,
+                "reason": f"classification failed: timed out after 120s",
+                "inferred_person": None, "inferred_customer": None, "inferred_project": None,
+            }
+            classification_failed = True
+        except FileNotFoundError:
+            logger.error("Classifier failed: `claude` not found on PATH")
+            classification = {
+                "call_type_id": "default_generic", "confidence": 0.0,
+                "reason": "classification failed: `claude` not found on PATH",
+                "inferred_person": None, "inferred_customer": None, "inferred_project": None,
+            }
+            classification_failed = True
+        except Exception as e:
+            logger.error(f"Classifier failed: {e}")
+            logger.error(traceback.format_exc())
+            classification = {
+                "call_type_id": "default_generic", "confidence": 0.0,
+                "reason": f"classification failed: {e}",
+                "inferred_person": None, "inferred_customer": None, "inferred_project": None,
+            }
+            classification_failed = True
+
+    # Effective action decision
+    force_manual_all = analysis_config.get('force_manual_all', False)
+    confidence_threshold = analysis_config.get('auto_analyze_confidence', 0.75)
+    confidence = classification.get('confidence', 0.0)
+
+    if force_manual_all and not force_type_id:
+        write_needs_triage(folder, classification, meeting_title, transcript_dir)
+        notify("Needs Triage", f"Manual review required: {meeting_title}")
+        return False
+    if classification_failed and not force_type_id:
+        write_needs_triage(folder, classification, meeting_title, transcript_dir)
+        notify("Needs Triage", f"Classification failed: {meeting_title}")
+        return False
+    if confidence < confidence_threshold and not force_type_id:
+        write_needs_triage(folder, classification, meeting_title, transcript_dir)
+        notify("Needs Triage", f"Low-confidence classification: {meeting_title}")
+        return False
+
+    call_type_id = classification.get('call_type_id', 'default_generic')
+    call_type_def = get_call_type(call_type_id)
+
+    # Resolve the entity name for prompt substitution: classifier's inferred_*
+    # field matching the call type's entity_name_key, else the existing
+    # metadata person_name, else None.
+    entity_key = call_type_def.get('entity_name_key', 'person_name')
+    inferred_by_key = {
+        'person_name': classification.get('inferred_person'),
+        'customer_name': classification.get('inferred_customer'),
+        'project_name': classification.get('inferred_project'),
+    }
+    resolved_entity_name = inferred_by_key.get(entity_key) or metadata_person_name or None
+
+    analysis = analyze_with_llm(
+        transcript=transcript,
+        call_type_id=call_type_id,
+        person_name=resolved_entity_name,
+        output_dir=str(folder),
+        title=meeting_title,
+    )
+
+    if not analysis:
+        logger.error(f"analyze_auto: analysis failed for {folder}")
+        notify("Analysis Failed", f"{meeting_title} (call type: {call_type_def.get('name', call_type_id)})")
+        return False
+
+    # Vault write - best-effort. The analysis file is already on disk
+    # regardless of whether this step succeeds.
+    vault_write_file_rel = analysis_config.get('vault_write_prompt_file')
+    if vault_write_file_rel:
+        try:
+            txt_files = list(transcript_dir.glob('*.txt'))
+            transcript_path = str(txt_files[0].resolve()) if txt_files else str(transcript_dir.resolve())
+
+            vault_template = _resolve_prompt_template_path(vault_write_file_rel).read_text(encoding='utf-8')
+            vault_prompt = (
+                vault_template
+                .replace('[ANALYSIS_BODY]', analysis)
+                .replace('[CALL_TYPE_ID]', call_type_id)
+                .replace('[INFERRED_PERSON]', classification.get('inferred_person') or '')
+                .replace('[INFERRED_CUSTOMER]', classification.get('inferred_customer') or '')
+                .replace('[INFERRED_PROJECT]', classification.get('inferred_project') or '')
+                .replace('[TRANSCRIPT_PATH]', transcript_path)
+                .replace('[MEETING_TITLE]', meeting_title)
+                .replace('[MODEL_NAME]', _resolve_llm_model_name())
+                .replace('[TIMESTAMP]', datetime.now().isoformat())
+                .replace('[CONFIDENCE]', str(round(confidence, 2)))
+            )
+
+            result = subprocess.run(
+                ['claude', '-p', vault_prompt, '--dangerously-skip-permissions'],
+                capture_output=True, text=True, timeout=180, env=_claude_cli_env(),
+            )
+            logger.info(f"Vault write output: {result.stdout.strip()}")
+            if result.returncode != 0:
+                logger.warning(f"Vault write process exited {result.returncode}: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            logger.error("Vault write timed out after 180s")
+        except FileNotFoundError:
+            logger.error("Vault write failed: `claude` not found on PATH")
+        except Exception as e:
+            logger.error(f"Vault write failed: {e}")
+            logger.error(traceback.format_exc())
+    else:
+        logger.warning("analysis.vault_write_prompt_file not configured - skipping vault write")
+
+    # Triage resolved - clear any prior needs_triage.json for this folder
+    triage_path = folder / "needs_triage.json"
+    if triage_path.exists():
+        triage_path.unlink()
+        logger.info(f"Cleared resolved needs_triage.json: {triage_path}")
+
+    notify("Analysis + Vault Write Complete", meeting_title)
+    return True
+
+
 # ─── Process Existing Video ──────────────────────────────────────────────────
 
 def process_existing_video(
     video_path: str,
     title: str = None,
     keep_video: bool = None,
+    keep_audio: bool = None,
     diarize: bool = None,
     call_type: str = None,
     person_name: str = None
@@ -1565,12 +2021,15 @@ def process_existing_video(
         video_path: Path to the video file
         title: Optional title for the recording (derived from filename if not provided)
         keep_video: If True, don't delete the original video after processing (default: use saved setting)
+        keep_audio: If True, don't delete the extracted audio after transcription (default: use saved setting)
         diarize: Enable speaker diarization (default: use saved setting)
         call_type: Call type ID for LLM analysis
         person_name: Person name for 1:1 meetings
     """
     if keep_video is None:
         keep_video = get_keep_video_setting()
+    if keep_audio is None:
+        keep_audio = get_keep_audio_setting()
 
     video_file = Path(video_path).resolve()
 
@@ -1661,10 +2120,25 @@ def process_existing_video(
     # Run WhisperX transcription
     print()
     run_whisperx(audio_file, paths['transcript_dir'], diarize=diarize)
-    
-    # Run LLM analysis if auto-analyze is enabled (transcript is the default deliverable;
-    # run `analyze <folder>` manually otherwise)
-    if should_auto_analyze():
+
+    # Delete the extracted audio if configured to and transcription actually
+    # produced a transcript - never delete audio for a failed run.
+    if not keep_audio:
+        transcript_produced = bool(list(Path(paths['transcript_dir']).glob('*.txt')))
+        if os.path.exists(audio_file) and transcript_produced:
+            os.remove(audio_file)
+            print("🗑️  Removing extracted audio...")
+        elif os.path.exists(audio_file):
+            print("⚠️  keep_audio disabled but no .txt transcript found - preserving audio")
+
+    # Run LLM analysis: new classify+vault-write flow if auto_classify is
+    # enabled, else the legacy should_auto_analyze() path (unchanged; transcript
+    # is the default deliverable, run `analyze <folder>` manually otherwise)
+    auto_classify = get_config().get('analysis', {}).get('auto_classify', False)
+    if auto_classify:
+        print()
+        analyze_auto(paths['output_dir'])
+    elif should_auto_analyze():
         print()
         transcript = load_transcript(paths['transcript_dir'])
         if transcript:
@@ -1681,7 +2155,9 @@ def process_existing_video(
     print(f"✅ Processing complete!")
     print(f"📁 Output directory: {paths['output_dir']}")
     print(f"📝 Transcript: {paths['transcript_dir']}")
-    if should_auto_analyze():
+    if auto_classify:
+        print(f"🤖 Analysis: classify + analyze + vault-write (see {paths['output_dir']})")
+    elif should_auto_analyze():
         print(f"🤖 Analysis: {paths['output_dir']}/analysis_*.md")
     elif is_llm_enabled():
         print(f"💡 Run analysis manually: whisperx-recorder analyze {paths['output_dir']}")
@@ -1791,16 +2267,29 @@ def run_background_processing(bg_state_json: str):
         logger.info("Starting WhisperX transcription...")
         run_whisperx(audio_file, paths['transcript_dir'], diarize=diarize)
         logger.info("WhisperX transcription complete")
-        
-        # Run LLM analysis if auto-analyze is enabled (transcript is the default deliverable)
-        logger.info(f"Checking auto-analyze status: {should_auto_analyze()}")
-        if should_auto_analyze():
+
+        # Delete the extracted audio if configured to and transcription
+        # actually produced a transcript - never delete audio for a failed run.
+        if not get_keep_audio_setting():
+            transcript_produced = bool(list(Path(paths['transcript_dir']).glob('*.txt')))
+            if os.path.exists(audio_file) and transcript_produced:
+                os.remove(audio_file)
+                logger.debug("Audio file deleted (keep_audio disabled)")
+            elif os.path.exists(audio_file):
+                logger.warning("keep_audio disabled but no .txt transcript found - preserving audio")
+
+        # Run LLM analysis: new classify+vault-write flow if auto_classify is
+        # enabled, else the legacy should_auto_analyze() path (unchanged).
+        if get_config().get('analysis', {}).get('auto_classify', False):
+            logger.info("auto_classify enabled, running analyze_auto...")
+            analyze_auto(paths['output_dir'])
+        elif should_auto_analyze():
             logger.info("Auto-analyze enabled, loading transcript...")
             transcript = load_transcript(paths['transcript_dir'])
             if transcript:
                 logger.info(f"Transcript loaded: {len(transcript)} chars")
                 logger.debug(f"Transcript preview: {transcript[:200]}...")
-                
+
                 analysis = analyze_with_llm(
                     transcript=transcript,
                     call_type_id=call_type,
@@ -1808,7 +2297,7 @@ def run_background_processing(bg_state_json: str):
                     output_dir=paths['output_dir'],
                     title=title
                 )
-                
+
                 if analysis:
                     logger.info("LLM analysis completed successfully")
                     notify("Analysis Complete", f"Finished: {title}")
@@ -1840,6 +2329,22 @@ def run_background_processing(bg_state_json: str):
         remove_processing_job(my_pid)
 
 
+def run_background_analyze_auto(bg_args_json: str):
+    """Internal function called by spawn_background_analyze_auto to re-run
+    analyze_auto with a forced call type, outside the SwiftBar click handler."""
+    setup_logging()
+    bg_args = json.loads(bg_args_json)
+    folder = bg_args['folder']
+    force_type_id = bg_args.get('force_type_id')
+    my_pid = os.getpid()
+
+    logger.info(f"Background retriage started: folder={folder}, force_type={force_type_id}, pid={my_pid}")
+    try:
+        analyze_auto(folder, force_type_id=force_type_id)
+    finally:
+        remove_processing_job(my_pid)
+
+
 # ─── CLI Interface ────────────────────────────────────────────────────────────
 
 def parse_args(args: list) -> tuple:
@@ -1858,6 +2363,15 @@ def parse_args(args: list) -> tuple:
             flags['keep_video'] = True
         elif arg == '--delete-video':
             flags['keep_video'] = False
+        elif arg == '--keep-audio':
+            flags['keep_audio'] = True
+        elif arg == '--delete-audio':
+            flags['keep_audio'] = False
+        elif arg == '--force-type' and i + 1 < len(args):
+            flags['force_type'] = args[i + 1]
+            i += 1
+        elif arg.startswith('--force-type='):
+            flags['force_type'] = arg.split('=', 1)[1]
         elif arg == '--call-type' and i + 1 < len(args):
             flags['call_type'] = args[i + 1]
             i += 1
@@ -1893,8 +2407,10 @@ def main():
         print("  stop                    - Stop recording and transcribe")
         print("  process <video> [title] - Process existing video file")
         print("  analyze <folder>        - Run LLM analysis on existing transcript")
+        print("  analyze-auto <folder>   - Classify, analyze, and vault-write a recording")
         print("  gdrive-upload [folder]  - Upload analysis files to Google Drive")
-        print("  config diarize <on|off> - Set default diarization preference")
+        print("  config <key> <on|off>   - Set configuration toggle")
+        print("    diarize, keep_video, keep_audio, auto_classify, force_manual_all, show_legacy_call_types")
         print("  types                   - List available call types")
         print("  status                  - Get current status (JSON output)")
         print("  logs [N]                - Show last N log entries (default: 50)")
@@ -1905,8 +2421,11 @@ def main():
         print("  --diarize               - Enable speaker diarization")
         print("  --keep-video            - Preserve the source video after processing (process command)")
         print("  --delete-video          - Delete the source video after processing (process command)")
+        print("  --keep-audio            - Preserve the extracted audio after transcription")
+        print("  --delete-audio          - Delete the extracted audio after transcription")
         print("  --call-type <type>      - Specify call type (e.g., team_meeting)")
         print("  --person <name>         - Person name (for 1:1 meetings)")
+        print("  --force-type <type>     - Skip classification and force a call type (analyze-auto command)")
         print("  --days <N>              - Days to look back for gdrive-upload (default: 3)")
         print()
         print(f"Current diarization default: {diarize_status}")
@@ -1946,10 +2465,17 @@ def main():
     elif command == 'types':
         # List available call types
         call_types = get_call_types()
+        show_legacy = get_config().get('swiftbar', {}).get('show_legacy_call_types', False)
+        allowed = set(CLASSIFIER_ALLOWED_TYPE_IDS)
+
         print()
         print("Available Call Types:")
         print("=" * 50)
+        has_legacy = False
         for ct_id, ct in call_types.items():
+            if not show_legacy and ct_id not in allowed:
+                has_legacy = True
+                continue
             icon = ct.get('icon', '📝')
             name = ct.get('name', ct_id)
             requires_person = "👤" if ct.get('requires_person_name') else ""
@@ -1957,6 +2483,8 @@ def main():
         print()
         print("Use with: --call-type <type_id>")
         print("👤 = requires --person flag")
+        if has_legacy:
+            print("  (legacy types hidden — enable with: whisperx-recorder config show_legacy_call_types on)")
         sys.exit(0)
     
     elif command == 'stop':
@@ -1974,11 +2502,13 @@ def main():
         title = ' '.join(args[2:]) if len(args) > 2 else None
         diarize = flags.get('diarize', get_diarize_setting())
         keep_video = flags.get('keep_video', get_keep_video_setting())
+        keep_audio = flags.get('keep_audio', get_keep_audio_setting())
         call_type = flags.get('call_type')
         person_name = flags.get('person_name')
         success = process_existing_video(
             video_path, title,
             keep_video=keep_video,
+            keep_audio=keep_audio,
             diarize=diarize,
             call_type=call_type,
             person_name=person_name
@@ -1987,24 +2517,34 @@ def main():
     
     elif command == 'config':
         if len(args) < 3:
-            print("Usage: whisperx_recorder.py config diarize <on|off>", file=sys.stderr)
+            print("Usage: whisperx_recorder.py config <key> <on|off>", file=sys.stderr)
             sys.exit(1)
-        
+
         setting = args[1].lower()
         value = args[2].lower()
-        
-        if setting == 'diarize':
-            if value in ('on', 'true', '1', 'yes', 'enabled'):
-                set_diarize_setting(True)
-            elif value in ('off', 'false', '0', 'no', 'disabled'):
-                set_diarize_setting(False)
-            else:
-                print(f"Invalid value: {value}. Use 'on' or 'off'", file=sys.stderr)
-                sys.exit(1)
-        else:
-            print(f"Unknown setting: {setting}", file=sys.stderr)
+
+        if setting not in _TOGGLE_MAP:
+            print(f"Unknown setting: {setting}. Valid options: {', '.join(_TOGGLE_MAP.keys())}", file=sys.stderr)
             sys.exit(1)
-    
+
+        if value in ('on', 'true', '1', 'yes', 'enabled'):
+            set_toggle(setting, True)
+        elif value in ('off', 'false', '0', 'no', 'disabled'):
+            set_toggle(setting, False)
+        else:
+            print(f"Invalid value: {value}. Use 'on' or 'off'", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == 'config-set':
+        if len(args) < 3:
+            print("Usage: whisperx_recorder.py config-set <key> <value>", file=sys.stderr)
+            sys.exit(1)
+        try:
+            set_value(args[1].lower(), args[2].lower())
+        except (KeyError, ValueError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+
     elif command == 'status':
         status = get_status()
         status['diarize_default'] = get_diarize_setting()
@@ -2103,6 +2643,27 @@ def main():
             print("❌ Analysis failed - check logs with: whisperx-recorder logs")
             sys.exit(1)
     
+    elif command == 'analyze-auto':
+        if len(args) < 2:
+            print("ERROR: recording folder required", file=sys.stderr)
+            print("Usage: whisperx_recorder.py analyze-auto <recording_folder> [--force-type <type>]", file=sys.stderr)
+            sys.exit(1)
+        recording_folder = args[1]
+        force_type = flags.get('force_type')
+        success = analyze_auto(recording_folder, force_type_id=force_type)
+        sys.exit(0 if success else 1)
+
+    elif command == 'analyze-auto-async':
+        if len(args) < 3:
+            print("ERROR: recording folder and call type required", file=sys.stderr)
+            print("Usage: whisperx_recorder.py analyze-auto-async <recording_folder> <call_type_id> [meeting_title...]", file=sys.stderr)
+            sys.exit(1)
+        recording_folder = args[1]
+        force_type_id = args[2]
+        meeting_title = ' '.join(args[3:]) if len(args) > 3 else Path(recording_folder).name
+        spawn_background_analyze_auto(recording_folder, force_type_id, meeting_title)
+        print(f"🔄 Re-classifying in background: {meeting_title}")
+
     elif command == 'gdrive-upload':
         # Upload analysis files to Google Drive
         if not is_gdrive_enabled():
@@ -2215,7 +2776,13 @@ def main():
         bg_state_json = args[1]
         success = run_background_processing(bg_state_json)
         sys.exit(0 if success else 1)
-    
+
+    elif command == '_analyze_auto_background':
+        # Internal command - called by spawn_background_analyze_auto
+        if len(args) < 2:
+            sys.exit(1)
+        run_background_analyze_auto(args[1])
+
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
         sys.exit(1)
