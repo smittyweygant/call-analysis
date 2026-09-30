@@ -64,7 +64,7 @@
       "requires_person_name": true,
       "name_prompt": "Enter customer/company name",
       "entity_name_key": "customer_name",
-      "inference_hint": "General customer-facing call \u2014 discovery, status update, technical discussion. Not a scoped PoC-planning session."
+      "inference_hint": "General customer-facing call \u2014 discovery, status update, technical discussion. The account on the call is directly adopting Akka. Not a scoped PoC-planning session, and not a call with a partner organization enabling a different end customer."
     },
     "one_on_one_bryan": {
       "name": "1:1 \u2014 Bryan Penner",
@@ -94,7 +94,16 @@
       "requires_person_name": true,
       "name_prompt": "Enter customer/company name",
       "entity_name_key": "customer_name",
-      "inference_hint": "Customer call specifically scoping or planning a Proof-of-Concept: success criteria, technical scope, timeline, resource asks. If the call is general customer engagement, prefer customer_meeting instead."
+      "inference_hint": "Customer call scoping, planning, or clarifying requirements/approach for a Proof-of-Concept, pilot, or trial: success criteria, technical scope, timeline, resource asks. Includes calls that review or refine an already-started PoC plan, not just first-time scoping. If the call is general customer engagement with no PoC framing, prefer customer_meeting instead."
+    },
+    "partner_engagement": {
+      "name": "Partner Engagement",
+      "icon": "🤝",
+      "prompt_file": "Agent_prompts/partner_engagement_prompt.md",
+      "requires_person_name": true,
+      "name_prompt": "Enter partner organization name",
+      "entity_name_key": "customer_name",
+      "inference_hint": "Call with a partner organization (systems integrator, consultancy, ISV) about enabling them on Akka for their own end customer's work, not a direct Akka customer relationship. Signals: attendee domain is neither the caller's own org nor the partner's end customer; discussion of enabling/certifying the partner, joint solutioning, or supporting the partner's PoC/delivery for a third-party client. If the account on the call is adopting Akka directly for itself, use customer_meeting or customer_poc_planning instead."
     },
     "internal_project": {
       "name": "Internal Project / Initiative Meeting",

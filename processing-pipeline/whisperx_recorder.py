@@ -1715,7 +1715,8 @@ def analyze_with_llm(
 # they stay reachable only via explicit --call-type.
 CLASSIFIER_ALLOWED_TYPE_IDS = [
     "one_on_one_bryan", "one_on_one_tyler", "one_on_one_generic",
-    "customer_meeting", "customer_poc_planning", "internal_project", "default_generic",
+    "customer_meeting", "customer_poc_planning", "partner_engagement",
+    "internal_project", "default_generic",
 ]
 
 

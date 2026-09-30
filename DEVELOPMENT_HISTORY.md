@@ -223,6 +223,28 @@ interview_fe_panel:
 
 ---
 
+### Phase 11: Inference-driven analysis + Obsidian vault write (September 2026)
+
+**Goal:** Eliminate manual call-type selection at recording start, persist analyses to the vault instead of only to `~/OBSRecordings/…` or Google Drive, and retire the 1Password dependency for the analysis step.
+
+**Problem:** The pipeline required choosing a call type upfront (or falling back to a generic default), which meant either interrupting the start flow with a prompt or getting a poorly-matched analysis. Completed analyses lived only in the local recording folder unless `gdrive.enabled` was turned on, with no default durable home. The direct Anthropic SDK path pulled its API key from 1Password on every run, adding a dependency and a possible `op` session-expiry failure mode to routine analysis.
+
+**Implementation:**
+- New `analyze-auto` subcommand runs classify → analyze → vault-write as three separate `claude -p` invocations. It's the default post-transcript flow, normally triggered automatically after `stop` (via `analysis.auto_classify`) or after `process`.
+- The classifier compares the transcript against a registry of seven current-focus call types (each carrying an `inference_hint`) and returns a confidence score. At or above `analysis.auto_analyze_confidence` (default `0.75`) it proceeds to analysis automatically; below that, or with `analysis.force_manual_all` set, it writes `needs_triage.json` and stops, surfacing the recording in SwiftBar's "Needs Triage" section for manual classification.
+- Added the `claude_cli` LLM provider, which shells to `claude -p` instead of calling the Anthropic or OpenAI SDKs directly. It's the new default in `llm.provider`; `anthropic` and `openai` remain as configurable side-by-side options.
+- Added the `analysis` config block (`auto_classify`, `auto_analyze_confidence`, `force_manual_all`, `classifier_prompt_file`, `vault_write_prompt_file`, `vault_path`) and the `swiftbar` config block (`show_legacy_call_types`).
+- After analysis, a vault-write `claude -p` session follows the routing conventions in the vault's own `CLAUDE.md`, landing the result under `People/<Name>.md`, `Customers/<Company>.md`, `Projects/<Project>.md`, or `Inbox.md`. Google Drive upload remains available but is now a secondary destination rather than the durable one.
+- `recording.keep_audio` defaults to `true` (video still defaults to deleted); both are toggleable via `whisperx-recorder config keep_audio on/off` and `config keep_video on/off`.
+- Purged 14 legacy call types from `config.default.json` in favor of the seven current-focus ones; their prompt and context files moved to `Agent_prompts/legacy/` and `Agent_context/legacy/` in the prompts repo.
+- SwiftBar plugin gained a no-prompt "Quick Start" item, six unified checkbox toggles for settings, and the "Needs Triage" section with a per-recording "Classify as…" submenu.
+
+**Trade-offs:** Model selection for the analysis, classification, and vault-write steps now flows through Claude Code's own configuration rather than an explicit `llm.model` field, so per-run model choice is less granular than the direct-SDK providers offer. Cost accounting also shifts from metered direct API usage to whatever the local `claude` CLI session is authenticated against (a Claude subscription rather than pay-per-token API billing).
+
+**Decision:** Worth it. A single auth path (the already-signed-in `claude` CLI) removes both the 1Password prompt and the API key management that came with `anthropic`/`openai`, and the Obsidian vault is a better long-term home for these analyses than scattered local Markdown files or a Drive folder that required opting in.
+
+---
+
 ## Key Technical Decisions
 
 ### Python Environment
@@ -384,5 +406,5 @@ Detailed implementation plans are preserved in `~/.cursor/plans/`:
 ---
 
 *Document generated: January 2026*
-*Last updated: January 30, 2026 - Added Google Drive integration, external prompt files, Customer Meeting type*
+*Last updated: September 25, 2026 — Added inference-driven pipeline (analyze-auto), Obsidian vault write, claude_cli provider, SwiftBar toggle consistency*
 *Cursor conversation transcript archived to: `~/.cursor/projects/.../agent-transcripts-archive/`*
