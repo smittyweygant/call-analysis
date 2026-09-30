@@ -39,86 +39,60 @@
     "anthropic_model": "claude-sonnet-5"
   },
   "analysis": {
-    "_comment": "Post-transcription classify + vault-write pipeline. Requires `claude` CLI on PATH and Akka MCP authenticated (see call-analysis-suite CLAUDE.md).",
-    "auto_classify": true,
+    "_comment": "Optional post-transcription classify + vault-write pipeline (see USER_GUIDE.md#auto-classify). Requires `claude` CLI on PATH; the classifier's calendar context is best-effort and degrades gracefully if no calendar MCP is configured/authenticated. Off by default here - turn on once you've defined your own call_types below and (optionally) written your own classifier/vault-write prompts.",
+    "auto_classify": false,
     "auto_analyze_confidence": 0.75,
     "force_manual_all": false,
-    "classifier_prompt_file": "Agent_prompts/_meta/classifier_prompt.md",
-    "vault_write_prompt_file": "Agent_prompts/_meta/vault_write_prompt.md",
-    "vault_path": "~/Obsidian/Smitty's Vault"
+    "classifier_prompt_file": "YOUR_CLASSIFIER_PROMPT.md",
+    "vault_write_prompt_file": "YOUR_VAULT_WRITE_PROMPT.md",
+    "vault_path": "~/path/to/your/notes"
   },
   "swiftbar": {
     "_comment": "SwiftBar plugin display toggles. Persistent user overrides live in ~/.config/whisperx/settings.json.",
     "show_legacy_call_types": false
   },
-  "_call_types_docs": "Define custom call types below. Each type can have: name, icon, prompt (or prompt_template for dynamic prompts), requires_person_name (for 1:1s), and context_files (array of paths relative to context_base_path in user settings, or repo root if not set)",
+  "_call_types_docs": "Define custom call types below. Each type can have: name, icon, prompt (or prompt_template for dynamic prompts), requires_person_name (for 1:1s), and context_files (array of paths relative to context_base_path in user settings, or repo root if not set). These are illustrative examples - replace with your own.",
   "call_types": {
-    "customer_meeting": {
-      "_comment": "Customer meetings prompt for company name. prompt_file loads from external markdown.",
-      "name": "Customer Meeting",
-      "icon": "\ud83e\udd1d",
+    "team_meeting": {
+      "name": "Team Meeting",
+      "icon": "👥",
+      "prompt": "You are analyzing a team meeting transcript. Please provide:\n1. **Meeting Summary** - A concise overview of what was discussed\n2. **Key Decisions** - Any decisions that were made\n3. **Action Items** - Tasks assigned with owners if mentioned\n4. **Follow-ups** - Items that need future attention\n\nBe specific and actionable in your analysis."
+    },
+    "interview": {
+      "_comment": "Example showing context_files usage. See examples/ folder for sample context files. Files load from context_base_path (user settings) or repo root",
+      "name": "Interview",
+      "icon": "👔",
       "context_files": [
-        "Agent_context/customer_meeting_context.md"
+        "examples/context/interview_shared_context.md",
+        "examples/context/interview_rubric.md"
       ],
-      "prompt_file": "Agent_prompts/customer_meeting_v2_prompt.md",
-      "requires_person_name": true,
-      "name_prompt": "Enter customer/company name",
-      "entity_name_key": "customer_name",
-      "inference_hint": "General customer-facing call \u2014 discovery, status update, technical discussion. The account on the call is directly adopting Akka. Not a scoped PoC-planning session, and not a call with a partner organization enabling a different end customer."
+      "prompt": "You are analyzing an interview transcript. Using the provided context about our hiring criteria and evaluation rubric, please provide:\n1. **Overall Assessment** - Your recommendation (Inclined/Not Inclined) with rationale\n2. **Strengths** - Key positive signals observed\n3. **Areas of Concern** - Any gaps or red flags\n4. **Role Fit** - Assessment of candidate fit for the role\n5. **Follow-up Questions** - Suggested topics for next round\n\nBe direct and specific in your evaluation."
     },
-    "one_on_one_bryan": {
-      "name": "1:1 \u2014 Bryan Penner",
-      "icon": "\ud83e\udded",
-      "prompt_file": "Agent_prompts/one_on_one_bryan_prompt.md",
-      "inference_hint": "1:1 with Bryan Penner (Smitty's manager). Calendar attendee will be Bryan; transcript typically covers scope shifts, priorities, feedback, career development."
-    },
-    "one_on_one_tyler": {
-      "name": "1:1 \u2014 Tyler",
-      "icon": "\ud83e\udd1d",
-      "prompt_file": "Agent_prompts/one_on_one_tyler_prompt.md",
-      "inference_hint": "1:1 with Tyler (peer). Calendar attendee will be Tyler; transcript covers shared work, ideas, collaboration, mutual asks."
-    },
-    "one_on_one_generic": {
+    "one_on_one": {
       "name": "1:1",
-      "icon": "\ud83d\udc64",
-      "prompt_file": "Agent_prompts/one_on_one_generic_prompt.md",
+      "icon": "👤",
+      "prompt_template": "You are analyzing a 1:1 meeting transcript with {person_name}. Please provide:\n1. **Discussion Topics** - Main subjects covered\n2. **Employee Concerns** - Any issues or blockers raised\n3. **Career Development** - Growth discussions or goals mentioned\n4. **Action Items** - Follow-ups for both manager and employee\n5. **Sentiment** - Overall tone and engagement level\n6. **Notes for Next 1:1** - Topics to revisit",
       "requires_person_name": true,
       "name_prompt": "Enter person's name",
-      "entity_name_key": "person_name",
-      "inference_hint": "1:1 with someone other than Bryan or Tyler. Two-attendee calendar event or a transcript that reads as one-on-one dialogue."
+      "entity_name_key": "person_name"
     },
-    "customer_poc_planning": {
-      "name": "Customer PoC Planning",
-      "icon": "\ud83e\uddea",
-      "prompt_file": "Agent_prompts/customer_poc_planning_prompt.md",
+    "customer_meeting": {
+      "name": "Customer Meeting",
+      "icon": "🤝",
+      "prompt_template": "You are analyzing a customer-facing call with {customer_name}. Please provide:\n1. **Meeting Summary** - What was discussed and why\n2. **Customer Needs** - Problems, requirements, or asks raised\n3. **Open Questions** - Anything left unresolved\n4. **Decision-Makers** - Who evaluates/approves next steps\n5. **Action Items** - Tasks with owners and due dates if mentioned",
       "requires_person_name": true,
       "name_prompt": "Enter customer/company name",
-      "entity_name_key": "customer_name",
-      "inference_hint": "Customer call scoping, planning, or clarifying requirements/approach for a Proof-of-Concept, pilot, or trial: success criteria, technical scope, timeline, resource asks. Includes calls that review or refine an already-started PoC plan, not just first-time scoping. If the call is general customer engagement with no PoC framing, prefer customer_meeting instead."
+      "entity_name_key": "customer_name"
     },
-    "partner_engagement": {
-      "name": "Partner Engagement",
-      "icon": "🤝",
-      "prompt_file": "Agent_prompts/partner_engagement_prompt.md",
-      "requires_person_name": true,
-      "name_prompt": "Enter partner organization name",
-      "entity_name_key": "customer_name",
-      "inference_hint": "Call with a partner organization (systems integrator, consultancy, ISV) about enabling them on Akka for their own end customer's work, not a direct Akka customer relationship. Signals: attendee domain is neither the caller's own org nor the partner's end customer; discussion of enabling/certifying the partner, joint solutioning, or supporting the partner's PoC/delivery for a third-party client. If the account on the call is adopting Akka directly for itself, use customer_meeting or customer_poc_planning instead."
+    "project": {
+      "name": "Project Meeting",
+      "icon": "🚀",
+      "prompt": "You are analyzing a Project/Initiative meeting transcript. Please provide:\n1. **Project Status** - Current phase and overall health\n2. **Progress Update** - Milestones achieved since last meeting\n3. **Blockers** - Issues impeding progress\n4. **Risks** - Potential problems and mitigation plans\n5. **Resource Needs** - People, budget, or tool requirements\n6. **Next Steps** - Immediate priorities and timeline\n7. **Action Items** - Tasks with owners and due dates"
     },
-    "internal_project": {
-      "name": "Internal Project / Initiative Meeting",
-      "icon": "\ud83d\udea7",
-      "prompt_file": "Agent_prompts/internal_project_prompt.md",
-      "requires_person_name": true,
-      "name_prompt": "Enter project/initiative name",
-      "entity_name_key": "project_name",
-      "inference_hint": "Internal Akka project/initiative sync \u2014 status, progress, blockers, next steps. Not customer-facing, not a 1:1."
-    },
-    "default_generic": {
-      "name": "Default Analysis",
-      "icon": "\ud83d\udcdd",
-      "prompt_file": "Agent_prompts/default_analysis_prompt.md",
-      "inference_hint": "Fallback when no other type matches confidently. The classifier should return this rather than guess."
+    "generic": {
+      "name": "Recording",
+      "icon": "🎙️",
+      "prompt": "You are analyzing a meeting/call transcript. Please provide:\n1. **Summary** - Brief overview of the discussion\n2. **Key Points** - Main topics covered\n3. **Decisions Made** - Any conclusions reached\n4. **Action Items** - Follow-ups with owners if mentioned\n5. **Notable Quotes** - Important statements worth highlighting"
     }
   }
 }

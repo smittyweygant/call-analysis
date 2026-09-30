@@ -995,18 +995,19 @@ def prompt_for_title() -> str:
 def spawn_calendar_snapshot(output_dir: str):
     """
     Fire-and-forget a `claude -p` call that captures nearby calendar events via
-    the Akka MCP gateway, for the classifier to use later. Never blocks
-    recording start - if `claude` isn't on PATH or the call fails, the
+    whichever Google Calendar MCP integration is configured, for the
+    classifier to use later. Never blocks recording start - if `claude`
+    isn't on PATH, no calendar MCP is authenticated, or the call fails, the
     snapshot file is simply never written and analyze-auto proceeds
     transcript-only.
     """
     snapshot_path = Path(output_dir) / "calendar_snapshot.json"
 
     prompt = (
-        "Call the GoogleCalendar_list_events tool via the Akka MCP gateway "
-        "for the primary calendar, with timeMin = now - 15 minutes and "
-        "timeMax = now + 45 minutes. Return the raw tool output as JSON "
-        "only - no prose, no code fence."
+        "Call a GoogleCalendar_list_events tool (from whichever calendar MCP "
+        "integration is configured) for the primary calendar, with "
+        "timeMin = now - 15 minutes and timeMax = now + 45 minutes. Return "
+        "the raw tool output as JSON only - no prose, no code fence."
     )
 
     # SwiftBar's terminal=false launches run with launchd's minimal PATH,
@@ -1710,14 +1711,12 @@ def analyze_with_llm(
 
 # ─── Auto-Classify + Analyze + Vault-Write ────────────────────────────────────
 
-# Call types the classifier is allowed to choose between. Legacy types
-# (interview, sales-pipeline, etc.) are out of scope for auto-classification -
-# they stay reachable only via explicit --call-type.
-CLASSIFIER_ALLOWED_TYPE_IDS = [
-    "one_on_one_bryan", "one_on_one_tyler", "one_on_one_generic",
-    "customer_meeting", "customer_poc_planning", "partner_engagement",
-    "internal_project", "default_generic",
-]
+
+def _classifier_eligible_type_ids(call_types: dict) -> list:
+    """Call types the classifier is allowed to choose between: every entry in
+    the user's own call_types, except any marked `"legacy": true`. Legacy
+    types stay reachable only via explicit --call-type."""
+    return [type_id for type_id, ct in call_types.items() if not ct.get('legacy')]
 
 
 def _resolve_prompt_template_path(relative_path: str) -> Path:
@@ -1731,10 +1730,8 @@ def _build_classifier_registry() -> list:
     """Build the CALL_TYPE_REGISTRY_JSON payload for the classifier prompt."""
     call_types = get_call_types()
     registry = []
-    for type_id in CLASSIFIER_ALLOWED_TYPE_IDS:
-        call_type = call_types.get(type_id)
-        if not call_type:
-            continue
+    for type_id in _classifier_eligible_type_ids(call_types):
+        call_type = call_types[type_id]
         entry = {"id": type_id, "name": call_type.get('name', type_id)}
         if call_type.get('inference_hint'):
             entry['inference_hint'] = call_type['inference_hint']
@@ -2467,14 +2464,13 @@ def main():
         # List available call types
         call_types = get_call_types()
         show_legacy = get_config().get('swiftbar', {}).get('show_legacy_call_types', False)
-        allowed = set(CLASSIFIER_ALLOWED_TYPE_IDS)
 
         print()
         print("Available Call Types:")
         print("=" * 50)
         has_legacy = False
         for ct_id, ct in call_types.items():
-            if not show_legacy and ct_id not in allowed:
+            if not show_legacy and ct.get('legacy'):
                 has_legacy = True
                 continue
             icon = ct.get('icon', '📝')

@@ -170,13 +170,13 @@ nano processing-pipeline/config.default.json
   },
 
   "analysis": {
-    "_comment": "Post-transcription classify + vault-write pipeline. Requires `claude` CLI on PATH and Akka MCP authenticated.",
-    "auto_classify": true,                          // Run the classifier automatically after transcription
+    "_comment": "Optional post-transcription classify + vault-write pipeline. Requires `claude` CLI on PATH; calendar context is best-effort and degrades gracefully without a calendar MCP configured.",
+    "auto_classify": false,                         // Run the classifier automatically after transcription
     "auto_analyze_confidence": 0.75,                // Confidence threshold to auto-analyze vs. queue for manual triage
     "force_manual_all": false,                      // Skip auto-classify entirely; always queue for manual triage
-    "classifier_prompt_file": "Agent_prompts/_meta/classifier_prompt.md",
-    "vault_write_prompt_file": "Agent_prompts/_meta/vault_write_prompt.md",
-    "vault_path": "~/Obsidian/Smitty's Vault"       // Obsidian vault root the vault-write step writes into
+    "classifier_prompt_file": "YOUR_CLASSIFIER_PROMPT.md",
+    "vault_write_prompt_file": "YOUR_VAULT_WRITE_PROMPT.md",
+    "vault_path": "~/path/to/your/notes"            // Notes root the vault-write step writes into
   },
 
   "swiftbar": {
@@ -311,7 +311,7 @@ security add-generic-password -a "$(whoami)" -s 'whisperx-obs-ws-password' -w '<
 
 ## Obsidian Vault Integration
 
-After analysis (whether triggered by `analyze-auto` or a manual `analyze`), a second `claude -p` invocation writes the result into the Obsidian vault at `analysis.vault_path` (default `~/Obsidian/Smitty's Vault`). This is the primary output destination — Google Drive (below) is a secondary, optional upload.
+After analysis (whether triggered by `analyze-auto` or a manual `analyze`), a second `claude -p` invocation writes the result into the Obsidian vault at `analysis.vault_path`. This is the primary output destination — Google Drive (below) is a secondary, optional upload.
 
 The vault-write session follows the routing and conventions in the vault's own `CLAUDE.md`, landing the analysis in one of:
 
@@ -519,23 +519,22 @@ With no `--force-type`, it runs the classifier (a `claude -p` call against `anal
 whisperx-recorder types
 ```
 
-Output (current-focus types, `swiftbar.show_legacy_call_types: false`):
+Output (reflects whatever `call_types` you've defined in `config.default.json` — example using the template's defaults):
 ```
 Available Call Types:
 ==================================================
-  🤝 customer_meeting        - Customer Meeting 
-  🧭 one_on_one_bryan        - 1:1 — Bryan Penner 
-  🤝 one_on_one_tyler        - 1:1 — Tyler 
-  👤 one_on_one_generic      - 1:1 👤
-  🧪 customer_poc_planning   - Customer PoC Planning 👤
-  🚧 internal_project        - Internal Project / Initiative Meeting 👤
-  📝 default_generic         - Default Analysis 
+  👥 team_meeting            - Team Meeting 
+  👔 interview               - Interview 
+  👤 one_on_one              - 1:1 👤
+  🤝 customer_meeting        - Customer Meeting 👤
+  🚀 project                 - Project Meeting 
+  🎙️ generic                 - Recording 
 
 Use with: --call-type <type_id>
 👤 = requires --person flag
 ```
 
-> **Note:** Flip `swiftbar.show_legacy_call_types: true` and re-add entries to `config.default.json` to bring retired call types back into this list — see [Call Types](#call-types).
+> **Note:** `swiftbar.show_legacy_call_types` gates any call types you've marked as legacy in your own `config.default.json` — see [Call Types](#call-types).
 
 #### `status` - Get Current Status
 
@@ -612,47 +611,31 @@ whisperx-recorder logs-clear
 # Record a customer meeting
 whisperx-recorder start "Acme Renewal Call" --call-type customer_meeting --person "Acme Corp"
 
-# Record a 1:1 with someone other than Bryan or Tyler
-whisperx-recorder start "Weekly 1:1" --call-type one_on_one_generic --person "John"
+# Record a 1:1
+whisperx-recorder start "Weekly 1:1" --call-type one_on_one --person "John"
 
 # Quick recording without diarization
 whisperx-recorder start "Quick Note" --no-diarize
 
 # Process an existing video
-whisperx-recorder process ~/Downloads/meeting.mov --call-type internal_project --person "Q1 Planning"
+whisperx-recorder process ~/Downloads/meeting.mov --call-type project --person "Q1 Planning"
 
-# Classify and analyze automatically
+# Classify and analyze automatically (requires analysis.auto_classify and your own classifier prompt)
 whisperx-recorder analyze-auto ~/OBSRecordings/2026-01-21_Meeting
 
 # Re-analyze forcing a different call type
-whisperx-recorder analyze-auto ~/OBSRecordings/2026-01-21_Meeting --force-type customer_poc_planning
+whisperx-recorder analyze-auto ~/OBSRecordings/2026-01-21_Meeting --force-type customer_meeting
 ```
 
 ---
 
 ## Call Types
 
-### Current-focus call types
+`call_types` in `config.default.json` is entirely user-defined — there's no fixed registry. `config.default.json.template` ships six illustrative examples (`team_meeting`, `interview`, `one_on_one`, `customer_meeting`, `project`, `generic`); replace them with whatever types match how you actually use the pipeline. Each entry supports `prompt`/`prompt_template`, `prompt_file` (external markdown), `context_files`, `requires_person_name`/`name_prompt`/`entity_name_key`, and an `inference_hint` string consumed by the classifier if you enable `analysis.auto_classify`.
 
-These are the types the `analyze-auto` classifier chooses among; `whisperx-recorder types` lists exactly this set when `swiftbar.show_legacy_call_types` is `false` (the default):
+`whisperx-recorder types` lists whatever is currently in your `call_types`. `swiftbar.show_legacy_call_types` is a simple on/off flag for hiding call types you've marked as retired but kept around — the mechanism doesn't care what you name them.
 
-| ID | Name | Prompt |
-|----|------|--------|
-| `customer_meeting` | Customer Meeting | `Agent_prompts/customer_meeting_v2_prompt.md` |
-| `one_on_one_bryan` | 1:1 — Bryan Penner | `Agent_prompts/one_on_one_bryan_prompt.md` |
-| `one_on_one_tyler` | 1:1 — Tyler | `Agent_prompts/one_on_one_tyler_prompt.md` |
-| `one_on_one_generic` | 1:1 | `Agent_prompts/one_on_one_generic_prompt.md` |
-| `customer_poc_planning` | Customer PoC Planning | `Agent_prompts/customer_poc_planning_prompt.md` |
-| `internal_project` | Internal Project / Initiative Meeting | `Agent_prompts/internal_project_prompt.md` |
-| `default_generic` | Default Analysis | `Agent_prompts/default_analysis_prompt.md` |
-
-Each of these also carries an `inference_hint` in `config.default.json` that the classifier uses to disambiguate similar calls (e.g. `customer_meeting` vs. `customer_poc_planning`) — see the [call-analysis-prompts](https://github.com/smittyweygant/call-analysis-prompts) repo for the prompt content itself.
-
-### Legacy call types
-
-The previous, broader set of call types (`team_meeting`, `interview_fe_*`, `pipeline_council`, `ee_*`, `sales_team`, `initiative_project`, `generic`, `one_on_one`, `candidate_*`, and others) was retired from `config.default.json` in favor of the seven current-focus types above. Their prompt and context files still exist, moved to `call-analysis-prompts/Agent_prompts/legacy/` and `call-analysis-prompts/Agent_context/legacy/`.
-
-To reactivate one: add its entry back to `config.default.json` under `call_types`, pointing `prompt_file`/`context_files` at the `legacy/` paths, and set `swiftbar.show_legacy_call_types: true` so it reappears in `whisperx-recorder types` and the SwiftBar menu.
+If you maintain a separate private repo of proprietary prompts/context (see [Private Prompt Content](README.md#private-prompt-content) in the README), keep that repo's own call-type registry and your `analyze-auto` classifier's allowed-ids list in sync by hand — the two aren't automatically linked.
 
 ### Example Call Types (from template)
 
@@ -946,8 +929,8 @@ which claude
 ```
 - Required for the default `claude_cli` LLM provider, the classifier, and the vault-write step regardless of which `llm.provider` you use for analysis. Install from [claude.ai/download](https://claude.ai/download) and ensure it's on `PATH` for the shell `whisperx_recorder.py` runs under (check `~/.config/whisperx/logs/whisperx_recorder.log` if it works in an interactive shell but not from SwiftBar).
 
-**Akka MCP not authenticated:**
-- The calendar snapshot the classifier uses as context fails silently when the Akka MCP gateway isn't signed in — `analyze-auto` proceeds transcript-only rather than failing the run. Run `/mcp` and sign in through Okta if you want calendar context back.
+**Calendar MCP not authenticated:**
+- The calendar snapshot the classifier uses as context fails silently when its calendar MCP integration isn't signed in — `analyze-auto` proceeds transcript-only rather than failing the run. Run `/mcp` and sign in if you want calendar context back.
 
 **`op` session expired:**
 - Only affects the `anthropic` and `openai` providers, whose API keys are typically `op://` references — `claude_cli` (the default) doesn't touch 1Password at all. If you've switched `llm.provider` away from `claude_cli` and see `op read` failures in the logs, re-authenticate with `op signin`.

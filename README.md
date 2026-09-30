@@ -11,7 +11,7 @@ A macOS menu bar application for recording calls/meetings with OBS, transcribing
 - 🧭 **Auto-classification** - after transcription, `analyze-auto` classifies the call against a registry of current-focus call types and analyzes automatically at confidence ≥ 0.75 (configurable), otherwise queues it for manual triage in SwiftBar
 - 🤖 **LLM analysis** - AI-powered summaries via `claude_cli` (default, shells to `claude -p`), OpenAI, or Anthropic, with customizable prompts
 - 📋 **Call type templates** - tailored prompts for different meeting types
-- 🧠 **Obsidian vault write** - completed analyses are routed into `~/Obsidian/Smitty's Vault/` (People/Customers/Projects/Inbox) as the primary output destination
+- 🧠 **Obsidian vault write** - completed analyses are routed into your Obsidian vault (`analysis.vault_path`) as the primary output destination
 - 📤 **Google Drive integration** - optional secondary upload of analysis to Shared Drive as Google Docs
 - ⏳ **Background processing** - start new recordings while previous ones transcribe
 - 🔔 **macOS notifications** for recording status and completion
@@ -110,13 +110,13 @@ nano processing-pipeline/config.default.json
     "keep_audio": true
   },
   "analysis": {
-    "_comment": "Post-transcription classify + vault-write pipeline. Requires `claude` CLI on PATH and Akka MCP authenticated.",
-    "auto_classify": true,
+    "_comment": "Optional post-transcription classify + vault-write pipeline. Requires `claude` CLI on PATH; calendar context is best-effort and degrades gracefully without a calendar MCP configured.",
+    "auto_classify": false,
     "auto_analyze_confidence": 0.75,
     "force_manual_all": false,
-    "classifier_prompt_file": "Agent_prompts/_meta/classifier_prompt.md",
-    "vault_write_prompt_file": "Agent_prompts/_meta/vault_write_prompt.md",
-    "vault_path": "~/Obsidian/Smitty's Vault"
+    "classifier_prompt_file": "YOUR_CLASSIFIER_PROMPT.md",
+    "vault_write_prompt_file": "YOUR_VAULT_WRITE_PROMPT.md",
+    "vault_path": "~/path/to/your/notes"
   },
   "swiftbar": {
     "_comment": "SwiftBar plugin display toggles. Persistent user overrides live in ~/.config/whisperx/settings.json.",
@@ -169,17 +169,7 @@ Personal settings that override project defaults:
 
 ## Call Types
 
-Current-focus call types (the classifier only chooses among these; legacy types can be reactivated per [USER_GUIDE.md](USER_GUIDE.md#call-types)):
-
-| Type | Icon | Purpose | Prompt file |
-|------|------|---------|--------------|
-| `customer_meeting` | 🤝 | General customer-facing call — discovery, status, technical discussion | `Agent_prompts/customer_meeting_v2_prompt.md` |
-| `one_on_one_bryan` | 🧭 | 1:1 with Bryan Penner (manager) | `Agent_prompts/one_on_one_bryan_prompt.md` |
-| `one_on_one_tyler` | 🤝 | 1:1 with Tyler (peer) | `Agent_prompts/one_on_one_tyler_prompt.md` |
-| `one_on_one_generic` | 👤 | 1:1 with anyone else (prompts for person name) | `Agent_prompts/one_on_one_generic_prompt.md` |
-| `customer_poc_planning` | 🧪 | Customer call scoping/planning a Proof-of-Concept | `Agent_prompts/customer_poc_planning_prompt.md` |
-| `internal_project` | 🚧 | Internal Akka project/initiative sync (prompts for project name) | `Agent_prompts/internal_project_prompt.md` |
-| `default_generic` | 📝 | Fallback when the classifier can't confidently match another type | `Agent_prompts/default_analysis_prompt.md` |
+`config.default.json.template` ships with a few illustrative example types (`team_meeting`, `interview`, `one_on_one`, `customer_meeting`, `project`, `generic`) — replace these with your own. If `analysis.auto_classify` is enabled, the classifier only chooses among whatever call types you've defined in your own `config.default.json`; keep that set and your classifier prompt's allowed-ids list in sync (see [USER_GUIDE.md](USER_GUIDE.md#call-types)).
 
 Call types support:
 - **`prompt`** - Inline prompt text
@@ -205,7 +195,7 @@ Add or customize call types in `config.default.json`. See [USER_GUIDE.md](USER_G
     └── needs_triage.json                 (present only if classification confidence was below threshold)
 ```
 
-A completed analysis is written into `~/Obsidian/Smitty's Vault/` (routed to `People/`, `Customers/`, `Projects/`, or `Inbox.md` depending on call content) as the primary destination; Google Drive upload remains available as an optional secondary destination when `gdrive.enabled` is `true`.
+A completed analysis is written into your Obsidian vault (`analysis.vault_path`), routed by whatever convention your vault-write prompt defines, as the primary destination; Google Drive upload remains available as an optional secondary destination when `gdrive.enabled` is `true`.
 
 ## Project Structure
 
