@@ -45,7 +45,11 @@ ALLOWED_TYPES = [
     'one_on_one_generic',
     'customer_meeting',
     'customer_poc_planning',
+    'internal_customer_prep',
+    'partner_engagement',
     'internal_project',
+    'sales_cadence_call',
+    'client_consulting',
     'default_generic',
 ]
 

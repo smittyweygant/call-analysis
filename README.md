@@ -181,6 +181,14 @@ Add or customize call types in `config.default.json`. See [USER_GUIDE.md](USER_G
 
 ## Output Structure
 
+A recording's folder is named after its call type once that's known. If no
+`--call-type` was given up front (e.g. SwiftBar's "Quick Start"), the folder
+starts out as `Meeting_<HHMM>` so every recording still gets its own folder;
+once `analyze-auto` classifies it with confidence ≥ `analysis.auto_analyze_confidence`,
+the whole folder is renamed in place to reflect the resolved call type (and
+entity name, if the type has one) — everything inside it moves together.
+Folders left at `Meeting_<HHMM>` are ones still awaiting manual triage.
+
 ```
 ~/OBSRecordings/
 └── 2026-01-21_Weekly_Standup/
@@ -191,11 +199,12 @@ Add or customize call types in `config.default.json`. See [USER_GUIDE.md](USER_G
     │   ├── *.srt   (subtitles)
     │   ├── *.txt   (plain text)
     │   └── *.vtt   (web subtitles)
+    ├── calendar_snapshot.json            (if a calendar MCP integration is configured)
     ├── analysis_<timestamp>_<model>.md   (if LLM analysis ran)
     └── needs_triage.json                 (present only if classification confidence was below threshold)
 ```
 
-A completed analysis is written into your Obsidian vault (`analysis.vault_path`), routed by whatever convention your vault-write prompt defines, as the primary destination; Google Drive upload remains available as an optional secondary destination when `gdrive.enabled` is `true`.
+A completed analysis is written into your Obsidian vault (`analysis.vault_path`), routed by whatever convention your vault-write prompt defines, as the primary destination; Google Drive upload remains available as an optional secondary destination when `gdrive.enabled` is `true`. If classification was inconclusive instead, a task gets appended to your vault's daily note asking you to triage the recording and either pick an existing call type or add a new one — see [USER_GUIDE.md](USER_GUIDE.md#needs-triage).
 
 ## Project Structure
 

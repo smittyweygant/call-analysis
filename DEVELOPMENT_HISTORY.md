@@ -245,6 +245,24 @@ interview_fe_panel:
 
 ---
 
+### Phase 12: Call-type-driven folder naming + triage escalation (October 2026)
+
+**Goal:** Stop recordings from sitting under a generic placeholder name once their call type is known, and make an inconclusive classification visibly actionable instead of just a silent `needs_triage.json` marker.
+
+**Problem:** A recording's folder/file names were fixed at recording start, before the transcript existed — so an unclassified quick-start recording kept a generic "Recording" name even after `analyze-auto` later resolved its real call type. And when classification came back inconclusive, the only signal was an entry in SwiftBar's "Needs Triage" submenu — easy to miss if you weren't actively looking at the menu bar.
+
+**Implementation:**
+- An untyped recording (no `--call-type` given up front) now starts out named `Meeting_<HHMM>` instead of a generic "Recording" label, so every meeting still gets its own folder regardless of whether a type was known at record time.
+- Once `analyze-auto` classifies a recording with confidence at or above `analysis.auto_analyze_confidence`, it renames the recording's whole folder in place (`_rename_folder_for_call_type` in `whisperx_recorder.py`) to `<date>_<CallTypeName>[ - <entity>]` — a plain directory rename, so everything inside (transcript, analysis file, metadata, calendar snapshot) moves together. This has to happen after `analyze_with_llm` writes the analysis file but before the vault-write step, which needs an absolute transcript path resolved against the final location.
+- When classification is inconclusive (low confidence, or the classifier call itself fails) rather than deliberately blanket-triaged via `force_manual_all`, a new `write_triage_task_to_vault()` step fires a `claude -p` call that appends a dated checkbox task to the vault's daily note, asking for either a manual `--call-type` pick or a brand-new call type recommendation — reusing the classifier's own `reason` field rather than hardcoding any recommendation heuristic in Python.
+- `get_call_type()`'s fallback key was corrected to try `default_generic` (used by the auto-classify pipeline) before `generic` (the public template's default id), so a missing/legacy call type id degrades gracefully under either naming convention.
+
+**Trade-off:** Only the enclosing folder gets renamed — the files inside it keep the timestamp-based names they were created with. Renaming every internal file to match would add real risk (stale paths mid-background-job) for little practical benefit, since the folder name alone already disambiguates the recording in a file listing.
+
+**Decision:** Worth it. The placeholder name was previously permanent once a recording wasn't given a type upfront; now it only persists for recordings that genuinely need a human to look at them.
+
+---
+
 ## Key Technical Decisions
 
 ### Python Environment
@@ -406,5 +424,5 @@ Detailed implementation plans are preserved in `~/.cursor/plans/`:
 ---
 
 *Document generated: January 2026*
-*Last updated: September 25, 2026 — Added inference-driven pipeline (analyze-auto), Obsidian vault write, claude_cli provider, SwiftBar toggle consistency*
+*Last updated: October 6, 2026 — Call-type-driven folder renaming, Meeting_<HHMM> placeholder naming, Obsidian triage task on inconclusive classification*
 *Cursor conversation transcript archived to: `~/.cursor/projects/.../agent-transcripts-archive/`*

@@ -429,6 +429,8 @@ Six checkbox toggles, each writing straight to `~/.config/whisperx/settings.json
 
 Appears only when one or more recordings have a `needs_triage.json` marker (low classifier confidence, or `force_manual_all` is on). Each recording gets a "Classify as…" submenu listing the current-focus call types (plus legacy ones if `show_legacy_call_types` is on); picking one runs `analyze-auto --force-type <id>` for that recording.
 
+A recording left in this state keeps its placeholder folder name (`Meeting_<HHMM>`, or whatever title it was given) — it's only renamed to reflect the call type once classification actually succeeds. When classification comes back inconclusive (low confidence, or the classifier call fails outright) rather than just blanket-triaged by `force_manual_all`, a task is also appended to your vault's daily note (`analysis.vault_path`) asking you to review the recording and either pick an existing call type or recommend a new one, based on the classifier's own stated reason — so it doesn't just sit silently behind `needs_triage.json` until you happen to check SwiftBar.
+
 #### View Processing Jobs
 
 When jobs are running, shows:
@@ -511,7 +513,7 @@ whisperx-recorder analyze-auto ~/OBSRecordings/2026-01-21_Meeting
 whisperx-recorder analyze-auto ~/OBSRecordings/2026-01-21_Meeting --force-type customer_meeting
 ```
 
-With no `--force-type`, it runs the classifier (a `claude -p` call against `analysis.classifier_prompt_file` and the current-focus call type registry). At confidence ≥ `analysis.auto_analyze_confidence` (default `0.75`) it proceeds straight to analysis and vault write; below that threshold, or if `analysis.force_manual_all` is set, it writes `needs_triage.json` into the recording folder instead and stops, leaving the recording in SwiftBar's "Needs Triage" section until classified manually.
+With no `--force-type`, it runs the classifier (a `claude -p` call against `analysis.classifier_prompt_file` and the current-focus call type registry). At confidence ≥ `analysis.auto_analyze_confidence` (default `0.75`) it proceeds straight to analysis and vault write — and renames the recording's folder (and everything inside it) to reflect the resolved call type, if it hadn't been named that way already; below that threshold, or if `analysis.force_manual_all` is set, it writes `needs_triage.json` into the (still placeholder-named) recording folder instead and stops, leaving the recording in SwiftBar's "Needs Triage" section until classified manually.
 
 #### `types` - List Call Types
 

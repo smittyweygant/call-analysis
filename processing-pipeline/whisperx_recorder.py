@@ -312,7 +312,9 @@ def get_call_types() -> dict:
 def get_call_type(call_type_id: str) -> dict:
     """Get a specific call type configuration."""
     call_types = get_call_types()
-    return call_types.get(call_type_id, call_types.get('generic', {}))
+    if call_type_id in call_types:
+        return call_types[call_type_id]
+    return call_types.get('default_generic', call_types.get('generic', {}))
 
 
 # ─── Google Drive Integration ────────────────────────────────────────────────
@@ -1070,13 +1072,13 @@ def begin_recording(
         call_type = details['call_type']
         person_name = details.get('person_name')
     else:
-        call_type = call_type or 'generic'
-        
+        call_type = call_type or 'default_generic'
+
         # Check if this call type requires a person name
         call_types = get_call_types()
         call_type_info = call_types.get(call_type, {})
         call_type_name = call_type_info.get('name', 'Recording')
-        
+
         if call_type_info.get('requires_person_name') and not person_name:
             # Prompt for name if not provided (supports custom prompt text)
             print()
@@ -1085,11 +1087,17 @@ def begin_recording(
             print("=" * 50)
             name_prompt = call_type_info.get('name_prompt', "Enter person's name")
             person_name = input(f"👤 {name_prompt}: ").strip()
-        
+
         # Build title
         if not title:
             if person_name:
                 title = f"{call_type_name} - {person_name}"
+            elif call_type in ('default_generic', 'generic'):
+                # No type was selected up front (e.g. SwiftBar's quick-start
+                # button) - name by start time so every untyped meeting still
+                # gets its own folder, and analyze_auto can rename it once the
+                # real call type is classified from the transcript/calendar.
+                title = f"Meeting_{datetime.now().strftime('%H%M')}"
             else:
                 title = call_type_name
     
@@ -1811,6 +1819,70 @@ def write_needs_triage(folder: str, classifier_output: dict, meeting_title: str,
     logger.info(f"Wrote needs_triage.json: {triage_path}")
 
 
+def _rename_folder_for_call_type(folder: Path, call_type_name: str, entity_name: Optional[str]) -> Path:
+    """Rename a just-classified recording folder so its name reflects the
+    resolved call type instead of the placeholder (e.g. 'Meeting_1430') it
+    was recorded under. Moves the whole directory - and everything inside it
+    (transcript, analysis file, metadata, calendar snapshot) - in one step.
+    Returns the folder's new path, or the original path if nothing changed.
+    """
+    date_match = re.match(r'(\d{4}-\d{2}-\d{2})_', folder.name)
+    date_str = date_match.group(1) if date_match else datetime.now().strftime('%Y-%m-%d')
+    label = call_type_name if not entity_name else f"{call_type_name} - {entity_name}"
+    new_base_name = f"{date_str}_{sanitize_filename(label)}"
+    new_folder = folder.parent / new_base_name
+    if new_folder == folder:
+        return folder
+    if new_folder.exists():
+        new_folder = folder.parent / f"{new_base_name}_{datetime.now().strftime('%H%M%S')}"
+    folder.rename(new_folder)
+    logger.info(f"Renamed recording folder: {folder.name} -> {new_folder.name}")
+    return new_folder
+
+
+def write_triage_task_to_vault(folder: Path, meeting_title: str, classification: dict):
+    """Best-effort: ask `claude -p` to append a task to today's Obsidian
+    Daily note when auto-classification was inconclusive, recommending
+    either a manual --call-type pick or a brand-new call type, so the
+    recording doesn't just sit silently in needs_triage.json."""
+    analysis_config = get_config().get('analysis', {})
+    vault_path = analysis_config.get('vault_path')
+    if not vault_path:
+        logger.warning("analysis.vault_path not configured - skipping triage task")
+        return
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    reason = classification.get('reason', '')
+    confidence = classification.get('confidence', 0.0)
+    prompt = (
+        f"Open the Obsidian vault at {vault_path}. Today's Daily note is "
+        f"Daily/{today}.md (build it from Reference/Templates/Daily Note "
+        f"Template.md first if it doesn't exist yet). Under its reminders/"
+        f"to-do section, add one new checkbox task (creation date ➕ {today}):\n\n"
+        f"Review the recording \"{meeting_title}\" at {folder} - auto-"
+        f"classification was inconclusive (confidence {confidence:.2f}: "
+        f"{reason}). Based on that reason, recommend in the task text "
+        f"whether this needs a brand-new call type (suggest a short name) "
+        f"or just a manual --call-type pick from an existing one, then run "
+        f"`whisperx-recorder analyze-auto-async {folder} <chosen-type>` to "
+        f"finish analysis.\n\nJust add the task - don't make any other change in the vault."
+    )
+    try:
+        result = subprocess.run(
+            ['claude', '-p', prompt, '--dangerously-skip-permissions'],
+            capture_output=True, text=True, timeout=120, env=_claude_cli_env(),
+        )
+        if result.returncode != 0:
+            logger.warning(f"Triage vault task process exited {result.returncode}: {result.stderr}")
+    except subprocess.TimeoutExpired:
+        logger.error("Triage vault task timed out after 120s")
+    except FileNotFoundError:
+        logger.error("Triage vault task failed: `claude` not found on PATH")
+    except Exception as e:
+        logger.error(f"Triage vault task failed: {e}")
+        logger.error(traceback.format_exc())
+
+
 def analyze_auto(recording_folder: str, force_type_id: Optional[str] = None) -> bool:
     """
     Classify a finished recording, run analysis with the inferred call type,
@@ -1917,10 +1989,12 @@ def analyze_auto(recording_folder: str, force_type_id: Optional[str] = None) -> 
         return False
     if classification_failed and not force_type_id:
         write_needs_triage(folder, classification, meeting_title, transcript_dir)
+        write_triage_task_to_vault(folder, meeting_title, classification)
         notify("Needs Triage", f"Classification failed: {meeting_title}")
         return False
     if confidence < confidence_threshold and not force_type_id:
         write_needs_triage(folder, classification, meeting_title, transcript_dir)
+        write_triage_task_to_vault(folder, meeting_title, classification)
         notify("Needs Triage", f"Low-confidence classification: {meeting_title}")
         return False
 
@@ -1950,6 +2024,13 @@ def analyze_auto(recording_folder: str, force_type_id: Optional[str] = None) -> 
         logger.error(f"analyze_auto: analysis failed for {folder}")
         notify("Analysis Failed", f"{meeting_title} (call type: {call_type_def.get('name', call_type_id)})")
         return False
+
+    # Now that the call type is resolved, rename the recording folder (and
+    # everything inside it) to reflect it, rather than leaving it under the
+    # placeholder name it was recorded under. Must happen before the vault
+    # write below, which resolves an absolute transcript path from `folder`.
+    folder = _rename_folder_for_call_type(folder, call_type_def.get('name', call_type_id), resolved_entity_name)
+    transcript_dir = folder / transcript_dir.name
 
     # Vault write - best-effort. The analysis file is already on disk
     # regardless of whether this step succeeds.
